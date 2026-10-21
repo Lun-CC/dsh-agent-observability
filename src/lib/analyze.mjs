@@ -31,18 +31,45 @@
 
 import { messageText, estimateTokens } from './session.mjs';
 
-/** 从工具结果里识别失败信号。注意：shell 非零退出码不会置 isError。 */
+/**
+ * 从工具结果里识别失败信号。
+ *
+ * 两个必须守住的边界（都是真数据踩出来的）：
+ *  1. shell 非零退出码**不会**置 isError，必须从文本读 `[exit code: N]`。
+ *  2. 不能对整段结果做宽松的 `not found` 匹配 —— 读文件时结果就是文件内容，
+ *     任何包含 "not found" 字样的源码都会被判成「读取失败」。
+ *     本文件自己就含有字面量 'path/target not found'，首版读它时自我命中。
+ *     所以：强模式（ENOENT / 找不到路径 等 OS 措辞）可全局匹配；
+ *     弱模式（泛化的 not found）只在短结果上匹配，且要求结果本身像错误信息。
+ */
+const STRONG_ERR = /ENOENT|No such file or directory|找不到路径|cannot find the path|command not found|is not recognized as the name|ItemNotFoundException|EACCES|Permission denied|拒绝访问/i;
+const WEAK_ERR = /not found|找不到|does not exist/i;
+const SHORT_RESULT = 400; // 字符数；超过此长度视为"内容"，不再做弱模式匹配
+
 export function failureSignal(resultEvent) {
   const m = resultEvent?.data?.message;
   if (!m) return null;
   const text = messageText(m);
-  // 先按文本证据分类，再看退出码 —— 因为 Get-ChildItem 之类的失败同时带
-  // 「找不到路径」与 exit 1，按文本归类信息量更大，处方方向也不同。
-  if (/not found|找不到|no such file|does not exist|command not found/i.test(text)) return 'path/target not found';
-  if (/permission denied|拒绝访问|access is denied/i.test(text)) return 'permission denied';
-  const exit = text.match(/\[exit code:\s*(-?\d+)\]/i);
-  if (exit && exit[1] !== '0') return `exit ${exit[1]}`;
+
+  const classify = () => (/EACCES|Permission denied|拒绝访问/i.test(text) ? 'permission denied' : 'path/target not found');
+
   if (m.isError) return 'pipeline error';
+
+  // 退出码标记只在结果**末尾**才算数：shell 包装器是追加在尾部。
+  // 否则读取任何"正文里提到 [exit code: 1]"的文件都会被误判为失败
+  // （test/metrics.test.mjs 里就有这种测试数据）。
+  const exitAtEnd = text.trimEnd().match(/\[exit code:\s*(-?\d+)\]\s*$/i);
+  const exitAny = text.length <= SHORT_RESULT ? text.match(/\[exit code:\s*(-?\d+)\]/i) : null;
+  const exit = exitAtEnd ?? exitAny;
+  if (exit && exit[1] !== '0') {
+    return STRONG_ERR.test(text) ? classify() : `exit ${exit[1]}`;
+  }
+
+  // 没有非零退出码时，只在短结果上认错误文本（避免把文件内容当错误）
+  if (text.length <= SHORT_RESULT) {
+    if (STRONG_ERR.test(text)) return classify();
+    if (WEAK_ERR.test(text)) return 'path/target not found';
+  }
   return null;
 }
 
@@ -140,6 +167,19 @@ export function analyze(loaded) {
     s.barren = list.length > 0 && s.failedCalls === list.length;
   }
 
+  // 「重读入步」：该步的未缓存输入主要来自上一步的工具结果。
+  // 工具结果在上一步 assistant 消息之后才追加，所以只在下一步被计价，且是全价。
+  for (let i = 1; i < steps.length; i++) {
+    const prev = steps[i - 1];
+    const prevResults = (callsByStep.get(prev.step) ?? []).reduce((a, c) => a + c.resultTokens, 0);
+    const newIn = steps[i].usage.inputTokens;
+    steps[i].ingest = {
+      prevResultTokens: prevResults,
+      share: newIn > 0 ? prevResults / newIn : 0,
+      heavy: newIn >= 5000 && prevResults >= newIn * 0.6,
+    };
+  }
+
   const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
 
   const totals = {
@@ -156,6 +196,8 @@ export function analyze(loaded) {
     carryTokensEst: sum(calls, (c) => c.carryTokens),
     failedCalls: calls.filter((c) => c.failure).length,
     barrenSteps: steps.filter((s) => s.barren).length,
+    heavyIngestSteps: steps.filter((s) => s.ingest?.heavy).length,
+    ingestCostEst: sum(steps.filter((s) => s.ingest?.heavy), (s) => s.usage.inputTokens),
   };
   totals.hitRate = totals.effInputReal > 0 ? totals.cacheReadReal / totals.effInputReal : 0;
   totals.failRate = totals.toolCalls > 0 ? totals.failedCalls / totals.toolCalls : 0;

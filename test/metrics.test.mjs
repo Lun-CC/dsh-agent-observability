@@ -88,3 +88,29 @@ test('成功的工具结果不报失败', () => {
   const ev = { data: { message: { isError: false, content: [{ type: 'text', text: 'all good\n[exit code: 0]' }] } } };
   assert.equal(failureSignal(ev), null);
 });
+
+test('读取成功但内容含 not found 的文件，不得判为失败（真实踩坑）', () => {
+  // 本仓库的 analyze.mjs 里就有字面量 'path/target not found'，
+  // 首版在读取它时把自己的源码判成了「读取失败」。
+  const source = `export function failureSignal() {\n  return STRONG_ERR.test(text) ? 'path/target not found' : null;\n}\n// `.padEnd(2000, 'x');
+  const ev = { data: { message: { isError: false, content: [{ type: 'text', text: source }] } } };
+  assert.equal(failureSignal(ev), null, '长结果（文件内容）不参与弱模式匹配');
+});
+
+test('短结果里的 not found 仍然判失败（真实错误信息）', () => {
+  const ev = { data: { message: { isError: false, content: [{ type: 'text', text: 'Error: not found: /nope/a.md' }] } } };
+  assert.equal(failureSignal(ev), 'path/target not found');
+});
+
+test('正文中间出现 [exit code: 1] 的文件，不得判为失败（真实踩坑）', () => {
+  // test/metrics.test.mjs 里作为测试数据写了 '[exit code: 1]'，
+  // 让它跟着自己的源码被判成了「失败」。退出码只认结果末尾。
+  const source = `const t = '找不到路径\\n[exit code: 1]';\n${'// filler\n'.repeat(200)}export {};\n`;
+  const ev = { data: { message: { isError: false, content: [{ type: 'text', text: source }] } } };
+  assert.equal(failureSignal(ev), null);
+});
+
+test('末尾带非零退出码仍然判失败', () => {
+  const ev = { data: { message: { isError: false, content: [{ type: 'text', text: `long output...\n[exit code: 1]  ` }] } } };
+  assert.equal(failureSignal(ev), 'exit 1');
+});

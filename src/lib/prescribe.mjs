@@ -148,11 +148,36 @@ export function prescribe(model) {
     });
   }
 
-  // ── R5 上下文单调膨胀 ────────────────────────────────────────────────
-  const positive = growth.filter((g) => g.delta > 0).length;
-  if (growth.length >= 4 && positive / growth.length > 0.8) {
-    const first = growth[0].effInput;
-    const last = growth[growth.length - 1].effInput;
+  // ── R5 重读入步：一步之内把大量内容灌进上下文，且全部按未缓存全价计 ──────
+  const heavy = steps.filter((s) => s.ingest?.heavy);
+  if (heavy.length) {
+    const cost = totals.ingestCostEst;
+    const top = heavy.sort((a, b) => b.usage.inputTokens - a.usage.inputTokens)[0];
+    out.push({
+      id: 'heavy-ingest',
+      severity: cost / Math.max(1, totals.totalReal) > 0.1 ? 'high' : 'medium',
+      title: `${heavy.length} 步一次性读入大量内容，合计 ${fmt(cost)} token 按未缓存全价计价`,
+      finding: `工具结果在上一步追加，只会在下一步被首次计价且不走缓存折扣。${top ? `第 ${top.step} 步未缓存输入 ${fmt(top.usage.inputTokens)} token，其中约 ${pct(top.ingest.share)} 来自上一步的工具结果。` : ''}`,
+      evidence: heavy
+        .slice(0, 3)
+        .map((s) => `S${s.step} · 未缓存输入 ${fmt(s.usage.inputTokens)} · 上一步工具结果 ${fmt(s.ingest.prevResultTokens)}（占 ${pct(s.ingest.share)}）`),
+      prescription: {
+        action: '先定位再读取：用 glob/grep 拿到结构后只读相关片段，不要在一个步骤里整份读取多个文件',
+        howTo: '对超过 2,000 token 的结果开启 spill，让 agent 按需回读；或按 offset/limit 分段读',
+        expectedSavingTokens: [Math.round(cost * 0.3), Math.round(cost * 0.55)],
+        basis: '估算：按只读必要片段后进入上下文的量削减 45–70% 计',
+      },
+      confidence: 'medium',
+    });
+  }
+
+  // ── R6 上下文单调膨胀（排除末步：答案步会一次性消费全部工具结果）──────────
+  // 末步增长几乎总是"把前面读到的结果用掉"，不是膨胀，不能计入。
+  const durable = growth.slice(0, Math.max(0, growth.length - 1));
+  const positive = durable.filter((g) => g.delta > 0).length;
+  if (durable.length >= 4 && positive / durable.length > 0.8) {
+    const first = durable[0].effInput;
+    const last = durable[durable.length - 1].effInput;
     const ratio = first > 0 ? last / first : 0;
     if (ratio >= GROWTH_RATIO_FLOOR) {
       out.push({
@@ -160,7 +185,7 @@ export function prescribe(model) {
         severity: ratio >= 3 ? 'high' : 'medium',
         title: `上下文体量从 ${fmt(first)} 涨到 ${fmt(last)}（×${ratio.toFixed(1)}），全程只增不减`,
         finding: '没有任何回收机制，每步的请求都包含之前所有的工具结果。',
-        evidence: growth.slice(0, 6).map((g) => `S${g.step} 体量 ${fmt(g.effInput)}（${g.delta >= 0 ? '+' : ''}${fmt(g.delta)}）`),
+        evidence: durable.slice(0, 6).map((g) => `S${g.step} 体量 ${fmt(g.effInput)}（${g.delta >= 0 ? '+' : ''}${fmt(g.delta)}）`),
         prescription: {
           action: '对长会话启用 compaction 压力阈值，或对已完成子任务的工具结果做剪枝',
           howTo: '在 agent/pre-step 上设更低的压力阈值，让 compaction 提前介入',

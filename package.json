@@ -1,6 +1,6 @@
 {
   "name": "dsh-audit",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "离线审计 DeepSeek Harness 会话日志：输出结论与可执行处方，而不是一张图。",
   "type": "module",
   "bin": {
