@@ -7,6 +7,48 @@
 
 ---
 
+## [0.8.0] - 2026-10-21
+
+Web UI。报告不再只躺在 `$DSH_HOME/dsh-audit/` 里等人去翻 txt ——
+插件在宿主端口上开一个页面，并在界面右下角放一个入口。
+
+### 新增
+
+- `lib/webui.mjs`：自包含报告页（无外部资源、跟随深浅色）+ 入口按钮脚本
+- 路由（挂在宿主的 `ctx.webServer` 上）：
+  - `GET /dsh-cost-audit/` 报告页
+  - `GET /dsh-cost-audit/api/list` 报告列表 + latest
+  - `GET /dsh-cost-audit/api/report?id=` 单份摘要 + 正文
+- 双通道注入入口按钮：
+  - 浏览器形态用 `webServer.tapIndex()` 改 index.html
+  - 桌面壳形态推 `webserver/index-inject` 的 `{kind:'script', text}` 行
+    （桌面端 index.html 静态直出，tapIndex 不生效；`script-src` 加载失败会中断启动，故用内联）
+- 每次审计额外写 `report-<id>.json`（结构化摘要，Web UI 直接消费）与 `latest.json`
+- `scripts/backfill-summaries.mjs`：给旧版遗留的 `.txt` 报告补 `.json`，
+  升级后历史报告也能出现在页面上（同一份日志重算，不伪造数字）
+- 配置项 `ui`（默认 `true`），关掉后路由与按钮都不注册，仍照常写文件
+- 测试 32 → 40（新增 `test/plugin-ui.test.mjs` 8 条：路由注册、接口形状、
+  id 校验、信任栅栏、注入幂等、`ui:false`）
+
+### 修复
+
+- **空会话的结论文案会误导**：`buildHeadline` 对 0 请求会输出
+  「未发现结构性浪费」，读起来像"审计通过"。改为「未发生模型调用（空会话或中断会话），
+  不产出账单，本次不给处方」
+- **信任栅栏过严导致页面打不开**：原先照搬 `Sec-Fetch-Site: cross-site` 一票否决，
+  实测把浏览器扩展/程序化打开的标签页也挡在门外（页面只剩一个 `forbidden`）。
+  改为：回环 Host 直接放行，仍保留 Origin 同源校验。理由是本插件所有路由都是只读 GET，
+  跨站页面读不到响应体（无 ACAO），拒绝它换不来安全性
+- 列表页两处数据绑定错误：`totalTokens` 字段不存在（应为 `totals.totalReal`）、
+  报告总数恒为 1
+
+### 优化
+
+- 页面默认选中"有实际请求的"报告 —— 空会话值得记录，但不该占住首屏
+- 保留策略同时清理 `.txt` 与同名 `.json`，不留半份
+
+---
+
 ## [0.7.0] - 2026-10-21
 
 发布就绪整改。按外部评审（`dsh-audit-plugin-review.md`）逐条修 P0 与多数 P1。

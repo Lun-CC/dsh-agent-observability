@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-observability",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "离线审计 + 宿主内插件：看清 DSH 会话的成本去向并给出可执行处方。",
   "type": "module",
   "bin": {

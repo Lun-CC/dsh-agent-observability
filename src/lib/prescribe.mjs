@@ -223,6 +223,10 @@ export function prescribe(model) {
 
 function buildHeadline(model, conclusions) {
   const { totals } = model;
+  // 空会话/中断会话不产出账单，不能说"未发现结构性浪费"——那会被读成"审计通过"
+  if (!totals.requests) {
+    return '未发生模型调用（空会话或中断会话），不产出账单，本次不给处方。';
+  }
   const base = `实测 ${fmt(totals.totalReal)} token / ${totals.requests} 次请求，平均每步 ${fmt(totals.avgStepCost)} token。`;
   if (!conclusions.length) {
     return `${base}未发现结构性浪费：缓存命中 ${pct(totals.hitRate)}，工具失败 ${totals.failedCalls}/${totals.toolCalls}，无无产出步。`;

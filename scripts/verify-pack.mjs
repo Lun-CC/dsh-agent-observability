@@ -24,6 +24,7 @@ const fail = (msg) => problems.push(msg);
 const requireFiles = [
   'lib/index.js',
   'lib/adapter.mjs',
+  'lib/webui.mjs',
   'lib/core/analyze.mjs',
   'lib/core/session.mjs',
   'lib/core/prescribe.mjs',

@@ -66,6 +66,9 @@ $DSH_HOME/dsh-audit/errors.log              仅出错时出现，宿主内绝不
 报告首行带 `生成时间`；保留策略为最多 200 份 / 最旧 7 天，超出自动清理。
 挂载条目 id 是 **`dsh-cost-audit`**（npm 上已有的 `dsh-audit` 是"插件生态体检"，两者不同）。
 
+想在界面里看？插件会在宿主端口上开一个页面 `http://127.0.0.1:<端口>/dsh-cost-audit/`，
+并在右下角放一个「¥ 成本报告」按钮。页面自包含、无外部资源，左边选会话、右边看数字和正文。
+
 安装只有一条命令（bundle 形态，`dsh plugin` 会同时写依赖和 `dsh.profile.bundles`）：
 
 ```bash

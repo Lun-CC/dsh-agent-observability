@@ -98,10 +98,14 @@ test('inject 只声明必需服务；tokenMeter 通过 ctx.get 可选读取', as
   assert.match(text, /平台定价（tokenMeter\.measure，实测）/, 'ctx.get 拿到的 meter 应产出平台定价区块');
 });
 
-test('只注册 session/flush 一个触发点，不再有 agent/turn-stopping', () => {
+test('审计窗口只挂 session/flush，不再有 agent/turn-stopping', () => {
   const ctx = fakeCtx();
   apply(ctx, {});
-  assert.deepEqual(Object.keys(ctx._h), ['session/flush']);
+  const hooks = Object.keys(ctx._h);
+  assert.ok(hooks.includes('session/flush'));
+  assert.ok(!hooks.includes('agent/turn-stopping'), '该事件的载荷不是 Session，按 Session 用会静默失效');
+  // webserver/index-inject 是 UI 入口注入用的，不参与审计
+  assert.deepEqual(hooks.filter((h) => h !== 'webserver/index-inject'), ['session/flush']);
 });
 
 test('flush 触发审计并写出报告', async () => {
@@ -156,6 +160,10 @@ test('空会话（events 为 []）不报错、不写 errors.log', async () => {
 
   assert.ok(existsSync(join(outDir, 'report-session-empty.txt')), '空会话也应产出（走跳过分支）');
   assert.ok(!existsSync(join(outDir, 'errors.log')), '空会话不应被当成形状未适配');
+  // 空会话的结论文案不能被读成"审计通过"
+  const summary = JSON.parse(readOut('report-session-empty.json'));
+  assert.match(summary.headline, /未发生模型调用/);
+  assert.doesNotMatch(summary.headline, /未发现结构性浪费/);
 });
 
 test('readSession 抛错只记日志，不向事件链抛出', async () => {

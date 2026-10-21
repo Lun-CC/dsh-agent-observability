@@ -40,6 +40,7 @@ rm -rf "$DSH_HOME/dsh-audit"        # Windows: %USERPROFILE%\.dsh\dsh-audit
 ```
 $DSH_HOME/dsh-audit/latest.txt              最近一次顶层会话的完整报告
 $DSH_HOME/dsh-audit/report-<sessionId>.txt  按会话归档（subagent 也各有一份）
+$DSH_HOME/dsh-audit/report-<sessionId>.json 同一份结果的结构化摘要（Web UI 消费）
 $DSH_HOME/dsh-audit/errors.log              仅出错时出现
 ```
 
@@ -47,7 +48,35 @@ $DSH_HOME/dsh-audit/errors.log              仅出错时出现
 - 首行带 `生成时间`，能判断报告新旧
 - 保留策略：最多 `maxReports` 份、最旧 `maxAgeDays` 天，超出自动清理
 
-**目前只写文件，没有 UI 面板。** 这是有意的：插件不碰界面，装坏了也不会把界面搞崩。
+## Web UI
+
+插件会给宿主 Web 界面加一个入口和一个报告页，**不需要改前端代码**：
+
+```
+http://127.0.0.1:<dsh端口>/dsh-cost-audit/
+```
+
+- 右下角一个「¥ 成本报告」按钮，点开就是这个页面（`target=_blank`）
+- 左侧列出所有会话报告，右侧是数字卡片 + 结论 + 完整报告正文
+- 默认选中"有实际请求的"报告：空会话不该占住首屏
+- 页面自包含（无外部资源、无 CDN），跟随系统深浅色
+
+实现方式（两种注入通道，覆盖两种宿主形态）：
+
+| 形态 | 通道 | 说明 |
+|---|---|---|
+| 浏览器打开的 Web UI | `webServer.tapIndex(html => …)` | 直接改写 index.html |
+| 桌面壳（Electron） | `webserver/index-inject` 推 `{ kind:'script', text }` 行 | 桌面端 index.html 从安装包静态直出，tapIndex 不生效；`script-src` 加载失败会中断启动，所以用内联 `script` 行 |
+
+`ui: false` 可关掉整个 Web 部分：路由不注册、按钮不注入，插件仍照常写报告文件。
+
+**升级后旧报告不显示？** 0.7.0 之前只写 `.txt`，Web UI 读 `.json`。跑一次回填即可
+（用同一份会话日志重算，不伪造数字）：
+
+```bash
+node scripts/backfill-summaries.mjs --dry-run   # 先看会写哪些
+node scripts/backfill-summaries.mjs
+```
 
 ### 报告长什么样
 
@@ -101,6 +130,7 @@ baseline.kind = estimated · logRevision 23 · 表面节点 4
 | `maxErrorLogBytes` | `262144` | `errors.log` 轮转阈值，超出改名为 `.1` |
 | `debugShape` | `false` | 把 `readSession` 快照结构 dump 到 `debug-snapshot.json`（**见隐私说明**） |
 | `debugTriggers` | `false` | 每次触发在 `errors.log` 记一行，用于排查"为什么没出报告" |
+| `ui` | `true` | 是否提供 Web 报告页与右下角入口按钮（`/dsh-cost-audit/`） |
 
 ---
 

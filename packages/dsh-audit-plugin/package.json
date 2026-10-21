@@ -1,6 +1,6 @@
 {
   "name": "dsh-audit-plugin",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "会话成本审计：按平台定价逐节点归因 token 成本并给出处方。Session cost audit for DeepSeek Harness: per-node token attribution via ctx.tokenMeter, then prescriptions.",
   "type": "module",
   "main": "lib/index.js",

@@ -23,7 +23,7 @@
  *   - 输出目录有保留策略，不会无界增长
  */
 
-import { mkdirSync, writeFileSync, renameSync, statSync, readdirSync, unlinkSync, appendFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, statSync, readdirSync, unlinkSync, appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -31,6 +31,7 @@ import { analyze } from './core/analyze.mjs';
 import { prescribe } from './core/prescribe.mjs';
 import { renderReport } from './core/report.mjs';
 import { loadedFromSnapshot, attachMeasure } from './adapter.mjs';
+import { renderPage, injectEntry, ENTRY_JS } from './webui.mjs';
 
 export const name = 'dsh-cost-audit';
 
@@ -66,6 +67,8 @@ const DEFAULTS = {
   debugShape: false,
   /** 每次触发在 errors.log 记一行触发路径（排查用，默认关）。 */
   debugTriggers: false,
+  /** 在宿主 Web UI 提供报告页与入口按钮（/dsh-cost-audit/）。 */
+  ui: true,
 };
 
 /** 原子写：先写临时文件再 rename，避免半截文件。 */
@@ -124,6 +127,10 @@ export function apply(ctx, config = {}) {
         try {
           unlinkSync(item.p);
           removed++;
+        } catch { /* ignore */ }
+        // 一并删掉同名 .json 摘要，避免只留半份
+        try {
+          unlinkSync(item.p.replace(/\.txt$/, '.json'));
         } catch { /* ignore */ }
       });
       if (removed) log('prune', `清理 ${removed} 份过期报告`);
@@ -220,8 +227,16 @@ export function apply(ctx, config = {}) {
       ensureDir(outDir);
       writeAtomic(join(outDir, `report-${id}.txt`), text);
 
-      // latest.txt 只由顶层会话写：subagent 的报告不应顶掉主报告
-      if (isTopLevel(session)) writeAtomic(join(outDir, 'latest.txt'), text);
+      // 结构化摘要供 Web UI 直接消费，省得前端解析文本
+      const top = isTopLevel(session);
+      const summary = buildSummary({ id, top, loaded, model, verdict, measured });
+      writeAtomic(join(outDir, `report-${id}.json`), JSON.stringify(summary, null, 1));
+
+      // latest.* 只由顶层会话写：subagent 的报告不应顶掉主报告
+      if (top) {
+        writeAtomic(join(outDir, 'latest.txt'), text);
+        writeAtomic(join(outDir, 'latest.json'), JSON.stringify(summary, null, 1));
+      }
 
       lastRunAt.set(id, Date.now());
       prune();
@@ -243,6 +258,236 @@ export function apply(ctx, config = {}) {
   } catch (e) {
     log('hook:flush', String(e?.message ?? e));
   }
+
+  // ── Web UI ────────────────────────────────────────────────────────────
+  if (cfg.ui) {
+    // 桌面壳的结构化注入行必须在插件加载期就挂上（宿主启动时收集一次并缓存）
+    try {
+      ctx.on('webserver/index-inject', (table) => {
+        try {
+          if (!Array.isArray(table)) return;
+          const already = table.some((r) => r && r.kind === 'script' && String(r.text ?? '').includes('dca-entry'));
+          if (already) return;
+          // kind:'script' 由桌面壳 createElement+textContent 执行，加载失败不会中断启动
+          table.push({ kind: 'script', text: ENTRY_JS });
+        } catch (e) {
+          log('ui:index-inject', String(e?.message ?? e));
+        }
+      });
+    } catch (e) {
+      log('ui:hook', String(e?.message ?? e));
+    }
+
+    const wire = (webServer) => {
+      if (!webServer || typeof webServer.register !== 'function') return;
+      const routes = [
+        ['/dsh-cost-audit', () => ({ html: renderPage() })],
+        ['/dsh-cost-audit/', () => ({ html: renderPage() })],
+        [
+          '/dsh-cost-audit/api/list',
+          () => {
+            const reports = listSummaries(outDir);
+            let latest = null;
+            try {
+              latest = JSON.parse(readFileSync(join(outDir, 'latest.json'), 'utf8')).id ?? null;
+            } catch { /* 还没有顶层报告 */ }
+            return { json: { reports, latest, outDir } };
+          },
+        ],
+        [
+          '/dsh-cost-audit/api/report',
+          (req) => {
+            const id = queryOf(req).get('id');
+            if (!safeId(id)) return { status: 400, json: { error: 'bad id' } };
+            let summary = null;
+            try {
+              summary = JSON.parse(readFileSync(join(outDir, `report-${id}.json`), 'utf8'));
+            } catch { /* 不存在 */ }
+            let text = null;
+            try {
+              text = readFileSync(join(outDir, `report-${id}.txt`), 'utf8');
+            } catch { /* 不存在 */ }
+            if (!summary && !text) return { status: 404, json: { error: 'not found' } };
+            return { json: { summary, text } };
+          },
+        ],
+      ];
+
+      for (const [path, fn] of routes) {
+        try {
+          webServer.register({
+            kind: 'exact',
+            path,
+            handler: (req, res) => {
+              try {
+                if (!allowedRequest(req, ctx)) {
+                  res.statusCode = 403;
+                  res.setHeader('content-type', 'text/plain; charset=utf-8');
+                  res.end('forbidden');
+                  return;
+                }
+                const out = fn(req, res) ?? {};
+                const status = out.status ?? 200;
+                if (out.html !== undefined) {
+                  res.statusCode = status;
+                  res.setHeader('content-type', 'text/html; charset=utf-8');
+                  res.setHeader('cache-control', 'no-store');
+                  res.end(out.html);
+                  return;
+                }
+                res.statusCode = status;
+                res.setHeader('content-type', 'application/json; charset=utf-8');
+                res.setHeader('cache-control', 'no-store');
+                res.end(JSON.stringify(out.json ?? {}));
+              } catch (e) {
+                log('route', `${path} ${e?.stack ?? e}`);
+                try {
+                  res.statusCode = 500;
+                  res.end('internal error');
+                } catch { /* ignore */ }
+              }
+            },
+          });
+        } catch (e) {
+          log('route:register', `${path} ${e?.message ?? e}`);
+        }
+      }
+
+      // 浏览器形态：直接改 index.html
+      try {
+        if (typeof webServer.tapIndex === 'function') webServer.tapIndex(injectEntry);
+      } catch (e) {
+        log('route:tapIndex', String(e?.message ?? e));
+      }
+    };
+
+    try {
+      const existing = tryGet(ctx, 'webServer');
+      if (existing) wire(existing);
+      else if (typeof ctx.inject === 'function') {
+        ctx.inject(['webServer'], (scoped) => {
+          try {
+            wire(scoped?.webServer ?? tryGet(scoped, 'webServer'));
+          } catch (e) {
+            log('ui:inject', String(e?.message ?? e));
+          }
+        });
+      }
+    } catch (e) {
+      log('ui', String(e?.message ?? e));
+    }
+  }
+}
+
+/** 读服务但不要求 inject（Cordis 的 ctx.get 语义），失败返回 null。 */
+function tryGet(ctx, name) {
+  try {
+    if (typeof ctx?.get === 'function') return ctx.get(name) ?? null;
+  } catch { /* ignore */ }
+  try {
+    return ctx?.[name] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function queryOf(req) {
+  try {
+    return new URL(req.url ?? '/', 'http://127.0.0.1').searchParams;
+  } catch {
+    return new URLSearchParams();
+  }
+}
+
+function safeId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(id);
+}
+
+/** 报告摘要列表，按生成时间倒序。 */
+function listSummaries(outDir) {
+  try {
+    return readdirSync(outDir)
+      .filter((f) => f.startsWith('report-') && f.endsWith('.json'))
+      .map((f) => {
+        try {
+          return JSON.parse(readFileSync(join(outDir, f), 'utf8'));
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => String(b.generatedAt ?? '').localeCompare(String(a.generatedAt ?? '')));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 最小信任栅栏。
+ *
+ * 策略（比 dsh-whale-widget 宽松一处，理由见下）：
+ *   1. Host 必须是回环，或由宿主 `connection.requestRejection` 认可；否则 403（fail-closed）
+ *   2. 带 Origin 时必须与 Host 同源；否则 403
+ *
+ * **不**因为 `Sec-Fetch-Site: cross-site` 一票否决：本插件所有路由都是只读 GET，
+ * 跨站页面读不到响应体（没有 ACAO 头），拒绝它换不来安全性，却会把
+ * 「浏览器扩展/程序化打开的标签页」挡在门外（实测：扩展发起的导航会被标成 cross-site）。
+ */
+function allowedRequest(req, ctx) {
+  try {
+    const host = String(req?.headers?.host ?? '').toLowerCase();
+    if (!host) return false;
+
+    // Origin 与 Host 必须同源（对只读接口而言，这条是防"页面被嵌进别处再借用户浏览器读"）
+    const origin = req?.headers?.origin;
+    if (typeof origin === 'string' && origin && origin !== 'null') {
+      try {
+        if (new URL(origin).host.toLowerCase() !== host) return false;
+      } catch {
+        return false;
+      }
+    }
+
+    const hn = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+    const loopback = hn === 'localhost' || hn.endsWith('.localhost') || hn === '::1' || /^127\.\d+\.\d+\.\d+$/.test(hn);
+    if (loopback) return true;
+
+    const conn = tryGet(ctx, 'connection');
+    if (conn && typeof conn.requestRejection === 'function') {
+      const code = conn.requestRejection(req);
+      return code === undefined || code === null || code === false;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 供 Web UI 的结构化摘要。
+ * 导出是为了让 scripts/backfill-summaries.mjs 能对旧版遗留的 .txt 报告补出 .json，
+ * 升级后旧报告也能出现在 Web UI 里。
+ */
+export function buildSummary({ id, top, loaded, model, verdict, measured }) {
+  const t = model.totals ?? {};
+  const denom = (t.inputReal ?? 0) + (t.cacheReadReal ?? 0);
+  return {
+    id,
+    top,
+    generatedAt: loaded.generatedAt,
+    session: { cwd: model.header?.cwd ?? null, preset: model.header?.agentPreset ?? null, events: model.events },
+    headline: verdict.headline ?? '',
+    totals: {
+      totalReal: t.totalReal ?? 0,
+      requests: t.requests ?? 0,
+      toolCalls: t.toolCalls ?? 0,
+      failedCalls: t.failedCalls ?? 0,
+      barrenSteps: t.barrenSteps ?? 0,
+      hitRate: denom > 0 ? (t.cacheReadReal ?? 0) / denom : null,
+    },
+    conclusions: (verdict.conclusions ?? []).map((c) => ({ id: c.id, title: c.title, severity: c.severity, confidence: c.confidence })),
+    measured: measured ? { baselineKind: measured.baselineKind, nodeSum: measured.nodeSum, surfaceTokens: measured.surfaceTokens } : null,
+  };
 }
 
 /** 平台定价区块：这是插件相对离线 CLI 的增量。 */
