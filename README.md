@@ -63,24 +63,20 @@ $DSH_HOME/dsh-audit/report-<sessionId>.txt  按会话归档
 $DSH_HOME/dsh-audit/errors.log              仅出错时出现，宿主内绝不抛异常
 ```
 
-安装（不改你的 `web` profile 之外的任何东西；建议先复制一份 profile 试）：
+安装只有一条命令（bundle 形态，`dsh plugin` 会同时写依赖和 `dsh.profile.bundles`）：
 
 ```bash
-# 1. 同步分析内核（src/lib → 插件的 lib/core，单一真源）
-node scripts/sync-core.mjs
-
-# 2. 把插件放进 profile 的 node_modules
-cp -r packages/dsh-audit-plugin ~/.dsh/profiles/<profile>/node_modules/dsh-audit-plugin
-
-# 3. 在 profile 的 cordis.patch.yml 末尾插入挂载条目
-#    注意必须是 insert 形式：id+name 只能改已有条目，凭空加会被跳过并告警
-cat >> ~/.dsh/profiles/<profile>/cordis.patch.yml <<'YAML'
-
-- insert:
-    - id: dsh-audit
-      name: dsh-audit-plugin
-YAML
+# 本地开发用 file:；发布到 npm 后直接 add dsh-audit-plugin
+dsh plugin --profile web add file:/绝对路径/packages/dsh-audit-plugin
 ```
+
+装完在 Web UI 的**「插件」页 → 已安装**里可见，默认启用，之后每个 turn 自动审计。
+本地改了代码需要 `node scripts/sync-core.mjs` 重新同步内核，再重启 dsh 生效。
+
+> 注意：**必须包成 bundle**（`package.json` 里 `dsh.bundle.patch` 指向自挂载清单）。
+> 只往 `cordis.patch.yml` 里 insert 一个叶子插件的话，它能跑，但插件页里根本不显示 ——
+> `listBundles()` 只枚举 bundle 包，非 bundle 的选中项会被标成 `not-bundle` 报错。
+> 这一点是实测确认的，不是推断。
 
 ### 宿主内的硬约束（都是实测踩出来的，不是文档写的）
 
@@ -93,9 +89,14 @@ YAML
 | `measure()` 的 `baseline.kind` 有 `none` / `estimated` / `usage` 三种 | 空会话是 `none`；无成功用量锚点时是 `estimated`；只有 `usage` 才可当实测口径 |
 | `measure()` 的 `totalTokens` ≠ 账单 | 实测 `totalTokens` 10729 而 `surfaceTokens` 2512；逐节点 `nodes[]` 才是可用信息 |
 | 复制出来的 profile 跑不了模型调用 | 被 `400 Illegal API invocation from an unapproved channel` 拦下 —— 渠道校验按官方客户端，不是凭证问题 |
+| 插件页只枚举 **bundle 包** | 叶子插件能跑但页面上不显示；`listBundles()` 会把非 bundle 的选中项标成 `not-bundle` |
+| 兼容性只校验**声明过的** `@deepseek-ai/dsh*` peerDependencies | 不声明就永远不被版本区间卡住；代价是 API 破坏性变更时不会提前告警 |
 
 因此插件的定位很明确：**`tokenMeter` 是归因器件，不是计费器件。**
 账单总额仍以 `assistant/message.data.usage` 为准；`tokenMeter.nodes[]` 用来回答「这笔钱记在谁头上」。
+
+**目前只写文件，没有 UI 面板。** 装上后插件页能看到开关，但报告要去 `$DSH_HOME/dsh-audit/` 看。
+不加 Web 面板是有意的：插件不碰界面，装坏了也不会把界面搞崩。
 
 宿主内样本：`docs/evidence/2026-10-21-宿主内插件报告样本.txt`
 

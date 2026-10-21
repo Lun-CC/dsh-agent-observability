@@ -1,0 +1,18 @@
+# ============================================================================
+# dsh-audit —— DSH bundle patch
+# ============================================================================
+# 这是插件的"挂载声明"。DSH 启动时按 bundle 层栈叠加，本文件把审计插件
+# 插入 profile 的配置树。
+#
+# 安装（bundle 形态下只需一条命令，不再手工改 profile patch）：
+#   dsh plugin --profile web add dsh-audit-plugin
+# 本地开发：
+#   dsh plugin --profile web add link:<本目录绝对路径>
+#
+# 装完后在 Web UI 的「插件」页勾选启用，它会写入 profile 的 dsh.profile.bundles。
+# 注意：必须是 insert 形式 —— id+name 只能修改已有条目，凭空新增会被跳过并告警。
+# ============================================================================
+
+- insert:
+    - id: dsh-audit
+      name: dsh-audit-plugin

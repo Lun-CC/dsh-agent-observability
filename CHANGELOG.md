@@ -7,6 +7,41 @@
 
 ---
 
+## [0.6.0] - 2026-10-21
+
+分发形态修正。上一版把插件做成了「靠 profile patch 插入的叶子插件」——
+能跑，但**在 Web UI 的插件页里根本不显示，也无法被一条命令安装**。
+本版改为官方 bundle 形态，并实测验证了整条安装链路。
+
+### 新增
+
+- `packages/dsh-audit-plugin/cordis.patch.yml`：bundle 自挂载清单（`- insert:` 形式）
+- `package.json` 增加 `dsh.bundle.patch` 与 `files` 白名单，移除 `private`，描述改中英双语
+- `packages/dsh-audit-plugin/README.md`：插件独立说明（安装、输出、口径、依赖取舍）
+
+### 修复
+
+- **插件页不显示**：根因是 `dsh-plugin-manager` 的 `listBundles()` 只枚举 bundle 包
+  （`bundleManifest()` 读 `dsh.bundle`），非 bundle 的选中项会被标 `not-bundle`。
+  上一版既不是依赖也没进 `dsh.profile.bundles`，因此完全不可见。改为 bundle 形态后实测出现于「已安装」
+- **无法一条命令安装**：改为 bundle 后，`dsh plugin --profile web add <pkg>` 会同时
+  写 `dependencies` 与 `dsh.profile.bundles`（经 `reconcile`），装完即默认启用
+
+### 优化
+
+- README 安装章节从「复制 + 手工改 patch」简化为一条命令，并保留手工方式作为原理说明
+- 明确「只有文件输出、无 UI 面板」是刻意选择，不是缺失
+
+### 实测结论（已写入 README 约束表）
+
+| 事实 | 依据 |
+|---|---|
+| 插件页只枚举 bundle 包 | `listBundles()` 读 `manifest.dsh.profile.bundles` + `dependencies`，逐项 `bundleManifest()`，缺 bundle 判 `not-bundle` |
+| `link:` 协议会半途失败 | 依赖写入 manifest 但未落 `node_modules`，随后 `reconcile` 报 `cannot resolve profile bundle`；改 `file:` 正常 |
+| 兼容性只校验声明过的 peerDependencies | `evaluatePluginCompatibility()` 只遍历 `@deepseek-ai/dsh*` 前缀的 peer；未声明直接返回可用，不声明反而不会被版本区间卡住 |
+
+---
+
 ## [0.5.0] - 2026-10-21
 
 插件化。新增宿主内运行的 DSH 插件与侦察插件，用一方服务取代离线解析，
