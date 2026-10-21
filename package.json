@@ -1,6 +1,6 @@
 {
-  "name": "dsh-audit",
-  "version": "0.6.0",
+  "name": "dsh-agent-observability",
+  "version": "0.7.0",
   "description": "离线审计 + 宿主内插件：看清 DSH 会话的成本去向并给出可执行处方。",
   "type": "module",
   "bin": {
@@ -13,7 +13,9 @@
   "scripts": {
     "audit": "node bin/dsh-audit.mjs",
     "test": "node --test test/metrics.test.mjs && node --test test/plugin.test.mjs && node --test test/plugin-audit.test.mjs",
-    "sync:core": "node scripts/sync-core.mjs"
+    "sync:core": "node scripts/sync-core.mjs",
+    "icon": "node scripts/make-icon.mjs",
+    "verify:pack": "node scripts/verify-pack.mjs"
   },
   "engines": {
     "node": ">=22.15"

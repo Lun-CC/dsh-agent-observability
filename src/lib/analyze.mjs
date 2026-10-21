@@ -280,6 +280,7 @@ export function analyze(loaded) {
       frameWarnings: loaded.frameWarnings,
       inHost: loaded.inHost ?? false,
       eventsFrom: loaded.eventsFrom ?? null,
+      generatedAt: loaded.generatedAt ?? null,
     },
   };
 }

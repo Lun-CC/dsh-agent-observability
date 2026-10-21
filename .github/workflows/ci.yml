@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+
+      - name: 版本一致性（仓库根与插件包）
+        run: |
+          node -e "
+          const a=require('./package.json').version;
+          const b=require('./packages/dsh-audit-plugin/package.json').version;
+          if(a!==b){console.error('版本不一致:',a,b);process.exit(1)}
+          console.log('版本一致:',a);
+          "
+
+      - name: 同步分析内核（src/lib → 插件 lib/core）
+        run: node scripts/sync-core.mjs
+
+      - name: 内核是否与真源一致（同步后不应有改动）
+        run: git diff --exit-code packages/dsh-audit-plugin/lib/core
+
+      - name: 单元测试
+        run: |
+          node --test test/metrics.test.mjs
+          node --test test/plugin.test.mjs
+          node --test test/plugin-audit.test.mjs
+
+      - name: 打包清单断言
+        run: |
+          node scripts/prepare-pack.mjs
+          node scripts/verify-pack.mjs
+
+      - name: 图标可复现
+        run: |
+          node scripts/make-icon.mjs
+          git diff --exit-code packages/dsh-audit-plugin/icon
+
+      - name: 离线 CLI 冒烟（构造一个最小会话日志）
+        run: node --test test/cli.test.mjs

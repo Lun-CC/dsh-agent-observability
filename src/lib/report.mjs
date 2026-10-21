@@ -12,6 +12,8 @@ export function renderReport(model, verdict, opts = {}) {
   L.push('');
   L.push(`会话 ${h.id ?? '?'}${h.agentPreset ? ` · preset ${h.agentPreset}` : ''}`);
   if (h.cwd) L.push(`工作目录 ${h.cwd}`);
+  // 生成时间放在最前面：用户要能判断这份报告有多旧
+  L.push(`生成时间 ${model.source.generatedAt ?? new Date().toISOString()}`);
   if (model.source.inHost) {
     L.push(`来源 sessionQuery（宿主内）· ${model.events} 事件 · 事件路径 ${model.source.eventsFrom ?? '?'}`);
   } else {

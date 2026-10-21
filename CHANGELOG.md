@@ -7,6 +7,81 @@
 
 ---
 
+## [0.7.0] - 2026-10-21
+
+发布就绪整改。按外部评审（`dsh-audit-plugin-review.md`）逐条修 P0 与多数 P1。
+其中**一个 P0 是静默失效**：`agent/turn-stopping` 的契约从来就不对，报告全靠 flush 兜着。
+
+### 修复
+
+- **P0-1 `agent/turn-stopping` 载荷契约不符（静默失效）**：首参是
+  `{ agent, turn, signal }` 而非 Session，代码却当 Session 用 → 该路径**从未触发过审计**，
+  还把 flush 拿到的真实 Session 覆盖掉。已删除该 hook，只保留 `session/flush`
+  （官方签名 `'session/flush'(this: Scoped<Session>, session: Session)`，载荷本身即 Session，
+  且在持久化检查点上 awaited，已覆盖 turn 结束）
+- **P0-4 `latest.txt` 被 subagent 顶掉**：改为仅当 `header.parentId == null && delegationDepth === 0`
+  才写 `latest.txt`；subagent 仍各留一份 `report-<id>.txt`
+- **P0-4 输出无界**：新增保留策略 `maxReports`（默认 200）/ `maxAgeDays`（默认 7），
+  每次审计后按 mtime 清理；`errors.log` 超过 `maxErrorLogBytes` 自动轮转为 `.1`
+- **P1-3 非原子写**：所有报告与调试文件改为「临时文件 + rename」，进程被杀不留半截文件
+- **P2 空会话误判为"形状未适配"**：`adapter.mjs` 的候选探测从 `length > 0` 改为
+  `Array.isArray`，真正 0 事件属合法空会话，不再写 `errors.log` 淹没真错误
+
+### 新增
+
+- **P0-2 兼容门控**：`engines.dsh: >=0.2.0-rc.2`、`engines.node`、`dsh.manifestVersion: 1`。
+  声明 `engines.dsh` 后官方会忽略 `peerDependencies` 的 `@deepseek-ai/dsh*` 区间，
+  因此只声明它、不写 peerDeps
+- **P0-3 许可与随包文件**：仓库根与包内各放 MIT `LICENSE`；`files` 补
+  `LICENSE`/`CHANGELOG.md`/`icon`；`scripts/prepare-pack.mjs` 在打包前把根 CHANGELOG
+  临时复制进包、`cleanup-pack.mjs` 打包后删除（单一真源，不维护两份）
+- **P0-3 显示元数据**：`icon`（128×128 PNG，由 `scripts/make-icon.mjs` 代码生成，可复现）、
+  `publishConfig.access: public`
+- **P0-5 文档**：插件 README 重写，补配置项表（9 项）、隐私说明（含 `debugShape` 的副作用）、
+  兼容版本、卸载方式、示例输出，以及与 npm 上 `dsh-audit`（插件生态体检）的区别
+- **P1-5 打包校验**：`scripts/verify-pack.mjs` 静态断言 11 个必需文件齐备、门控字段存在、版本一致；
+  挂到插件包 `prepack`
+- **P1-6 CI**：`.github/workflows/ci.yml` —— 版本一致性、core 同步无漂移、四组测试、
+  打包清单断言、图标可复现（`git diff --exit-code`）
+- **测试** 21 → 32：新增 CLI 端到端 4 条（多帧 zstd 解码、口径、处方、空目录退出码）、
+  插件新增 7 条（inject 收缩、subagent 不顶 latest、tokenMeter 降级、空会话、保留策略等）
+
+### 修复（规格之外，评审建议反了）
+
+- **P1-1 的"正解"不是把 tokenMeter 从 inject 移走**。按评审建议改成
+  `inject: ['sessionQuery']` 后实测发现：报告里平台定价整块消失 —— 因为 Cordis 禁止
+  读取未注入的服务（`cannot get property "tokenMeter" without inject`，可选链救不了）。
+  那等于废掉插件唯一的差异化能力。正解是 Cordis 的 `ctx.get(name)`
+  （原文：*Read a service from the store without the inject requirement*），
+  它返回服务或 `undefined`，天然是可选依赖。现为
+  `inject: ['sessionQuery']` + `ctx.get('tokenMeter')`，两条需求同时满足。
+  真机复验：新会话报告重新出现「平台定价」区块（`baseline.kind = none`，空会话）
+
+### 优化
+
+- 报告头部新增 `生成时间`（ISO 时间戳），用户可判断报告新旧
+- 去抖从"全局 3 秒"改为**按会话** `minIntervalMs`，并发会话不会互相吞掉审计
+- 新增 `debugTriggers`：每次触发在 `errors.log` 记一行触发路径，用于排查"为什么没出报告"
+- CLI：目录识别不再依赖路径里是否含 `session-`（改为探测目录内是否有 `.jsonl.zstd`）；
+  所有目标都失败时以非零码退出
+
+### 移除
+
+- 移除 `agent/turn-stopping` 监听（契约不符，且 Agent 在 0.2.1-rc.2 未公开 session 访问器）
+- 移除"从 inject 里去掉 tokenMeter"的做法
+
+### 未做（明确延期）
+
+- **P1-2 `export const Config`**：`@deepseek-ai/schemastery` 无法从 profile 解析
+  （已实测 `ERR_MODULE_NOT_FOUND`），而第三方插件（如 `billion-context`）的做法是
+  自带 `zod` 这类普通依赖、完全不 import 一方包。加硬依赖会抬高 `file:` 安装的失败面，
+  且 schema 契约无法在隔离实例里验证。延到 0.8，与「Web 设置面板」一起做
+- **P1-4 每 turn 全量重算**：仍是 `readSession` + 全量 analyze。增量解析需要
+  `header.lastSeq` 之类的稳定游标，待验证后再改（当前会话到 1,071 事件时同步 CPU 压力可感）
+- **P2 最小 UI / 离线 CLI 入包**：`bin/dsh-audit.mjs` 仍未进包，用户拿不到离线 CLI
+
+---
+
 ## [0.6.0] - 2026-10-21
 
 分发形态修正。上一版把插件做成了「靠 profile patch 插入的叶子插件」——

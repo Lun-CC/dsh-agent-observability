@@ -1,6 +1,6 @@
 {
   "name": "dsh-audit-plugin",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "会话成本审计：按平台定价逐节点归因 token 成本并给出处方。Session cost audit for DeepSeek Harness: per-node token attribution via ctx.tokenMeter, then prescriptions.",
   "type": "module",
   "main": "lib/index.js",
@@ -11,18 +11,35 @@
   "files": [
     "lib",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "icon"
   ],
+  "engines": {
+    "node": "^22.19.0 || >=24",
+    "dsh": ">=0.2.0-rc.2"
+  },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
   },
+  "icon": "icon",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
     "observability",
-    "token-cost"
+    "token-cost",
+    "cost-audit"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/sync-core.mjs && node ../../scripts/prepare-pack.mjs && node ../../scripts/verify-pack.mjs",
+    "postpack": "node ../../scripts/cleanup-pack.mjs"
+  }
 }

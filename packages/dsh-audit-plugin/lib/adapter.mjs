@@ -27,8 +27,11 @@ export function eventsFromSnapshot(snapshot) {
     ['snapshot.log.events', snapshot.log?.events],
     ['snapshot.log.records', snapshot.log?.records],
   ];
+  // 注意：这里必须接受**空数组**。真正的空会话（新建后立刻 flush）
+  // events 就是 []，属于合法状态；旧版用 length > 0 探测会把它判成
+  // "形状未适配" 并写 errors.log，把真错误淹掉。
   for (const [where, value] of candidates) {
-    if (Array.isArray(value) && value.length > 0) return { where, events: value.map(normalizeEvent).filter(Boolean) };
+    if (Array.isArray(value)) return { where, events: value.map(normalizeEvent).filter(Boolean) };
   }
   return null;
 }
@@ -53,6 +56,7 @@ export function loadedFromSnapshot(snapshot, file = '(in-host)') {
   if (!got) {
     throw new Error('无法从 sessionQuery.readSession 的返回中定位事件数组（形状未适配）');
   }
+
   const events = got.events.slice();
 
   // 实测（2026-10-21 debug-snapshot.json）：readSession 返回

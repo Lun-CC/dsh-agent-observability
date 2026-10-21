@@ -55,13 +55,16 @@ node bin/dsh-audit.mjs ~/.dsh/sessions --json
 
 ## 在 DSH 内运行（插件）
 
-插件挂在 profile 里，每个 turn 结束自动审计当前会话，写到 `$DSH_HOME/dsh-audit/`：
+插件挂在 profile 里，每个 `session/flush` 自动审计当前会话，写到 `$DSH_HOME/dsh-audit/`：
 
 ```
-$DSH_HOME/dsh-audit/latest.txt              最近一次的完整报告
+$DSH_HOME/dsh-audit/latest.txt              最近一次**顶层**会话的完整报告（subagent 不会顶掉它）
 $DSH_HOME/dsh-audit/report-<sessionId>.txt  按会话归档
 $DSH_HOME/dsh-audit/errors.log              仅出错时出现，宿主内绝不抛异常
 ```
+
+报告首行带 `生成时间`；保留策略为最多 200 份 / 最旧 7 天，超出自动清理。
+挂载条目 id 是 **`dsh-cost-audit`**（npm 上已有的 `dsh-audit` 是"插件生态体检"，两者不同）。
 
 安装只有一条命令（bundle 形态，`dsh plugin` 会同时写依赖和 `dsh.profile.bundles`）：
 
@@ -83,6 +86,8 @@ dsh plugin --profile web add file:/绝对路径/packages/dsh-audit-plugin
 | 事实 | 后果 |
 |---|---|
 | 不声明 `inject` 就读不到任何服务 | 直接访问 `ctx.tokenMeter` 抛 `cannot get property "x" without inject`，`inject` 不能是空数组 |
+| 想"可选依赖"要用 `ctx.get(name)` | 未注入的服务只能用 `ctx.get()` 读（官方原文：*without the inject requirement*）；可选链 `ctx.x?.y` 救不了 |
+| `agent/turn-stopping` 的首参**不是** Session | 官方签名是 `(this: Scoped<Agent>, payload: { agent, turn, signal })`；按 Session 用会静默失效。审计窗口应挂 `session/flush` |
 | `session/flush` 的 payload **本身就是 Session** | 不是 `{ session }` 包装，直接传给 `measure()` |
 | `readSession()` 返回 `{ session, inheritedEventCount, events }` | 头部在 `session` 上，不叫 `header`；事件流里不含 `session` 类型事件，需合成一条否则报告头显示 `?` |
 | `listEvents()` 只返回 `{ sessionId, seq, type, time, surface }` | **没有 `data`**，做分析必须用 `readSession` |

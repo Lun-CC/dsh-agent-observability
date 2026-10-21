@@ -9,8 +9,8 @@
  * 不需要启动 DSH，不需要 API key：只读本地已落盘的 session 日志。
  */
 
-import { statSync, existsSync } from 'node:fs';
-import { loadSession, listSessionDirs, estimateTokens } from '../src/lib/session.mjs';
+import { statSync, existsSync, readdirSync } from 'node:fs';
+import { loadSession, listSessionDirs } from '../src/lib/session.mjs';
 import { analyze } from '../src/lib/analyze.mjs';
 import { prescribe } from '../src/lib/prescribe.mjs';
 import { renderReport } from '../src/lib/report.mjs';
@@ -32,11 +32,14 @@ function resolveSessions(target) {
   const st = statSync(target);
   if (st.isFile()) return [target];
 
-  // 目录：可能是单个 session 目录，也可能是 sessions 根目录
-  if (existsSync(`${target}`) && target.includes('session-')) return [target];
+  // 目录本身就是会话目录：里面直接有 .jsonl.zstd。
+  // 不再靠路径里是否含 "session-" 判断 —— 用户可能把会话目录改名或放在别处。
+  const hasLog = readdirSync(target).some((n) => n.endsWith('.jsonl.zstd'));
+  if (hasLog) return [target];
+
   const dirs = listSessionDirs(target);
   if (dirs.length) return dirs;
-  return [target]; // 交给 loadSession 里的目录探测
+  throw new Error(`目录下没有可审计的会话日志：${target}`);
 }
 
 function runOne(dir) {
@@ -66,6 +69,10 @@ function main() {
     }
   }
 
+  // 全部目标都失败时以非零码退出：否则脚本化调用会误以为成功
+  const allFailed = results.length > 0 && results.every((r) => r.error);
+  const exitCode = allFailed ? 1 : 0;
+
   if (args.json) {
     const payload = results.map((r) =>
       r.error
@@ -84,6 +91,7 @@ function main() {
           },
     );
     console.log(JSON.stringify(payload, null, 2));
+    if (exitCode) process.exit(exitCode);
     return;
   }
 
@@ -106,6 +114,8 @@ function main() {
     }
     console.log('');
   }
+
+  if (exitCode) process.exit(exitCode);
 }
 
 main();
