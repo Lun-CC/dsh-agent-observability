@@ -12,7 +12,11 @@ export function renderReport(model, verdict, opts = {}) {
   L.push('');
   L.push(`会话 ${h.id ?? '?'}${h.agentPreset ? ` · preset ${h.agentPreset}` : ''}`);
   if (h.cwd) L.push(`工作目录 ${h.cwd}`);
-  L.push(`日志 ${model.source.bytesOnDisk.toLocaleString('en-US')} B → 解压 ${model.source.bytesDecoded.toLocaleString('en-US')} B · ${model.frames} 帧 · ${model.events} 事件`);
+  if (model.source.inHost) {
+    L.push(`来源 sessionQuery（宿主内）· ${model.events} 事件 · 事件路径 ${model.source.eventsFrom ?? '?'}`);
+  } else {
+    L.push(`日志 ${model.source.bytesOnDisk.toLocaleString('en-US')} B → 解压 ${model.source.bytesDecoded.toLocaleString('en-US')} B · ${model.frames} 帧 · ${model.events} 事件`);
+  }
 
   // 空会话 / 中断会话：没有发生过模型调用，不产出账单，避免"无浪费"的假阳性结论
   if (totals.requests === 0) {

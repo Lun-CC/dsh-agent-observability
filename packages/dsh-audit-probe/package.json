@@ -1,0 +1,13 @@
+{
+  "name": "dsh-audit-probe",
+  "version": "0.1.0",
+  "description": "Reconnaissance plugin: dumps real ctx service surfaces, event payloads and tokenMeter measurements so the audit plugin can be written against verified shapes.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "private": true
+}

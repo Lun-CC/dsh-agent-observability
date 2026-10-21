@@ -1,14 +1,19 @@
 {
   "name": "dsh-audit",
-  "version": "0.4.1",
-  "description": "离线审计 DeepSeek Harness 会话日志：输出结论与可执行处方，而不是一张图。",
+  "version": "0.5.0",
+  "description": "离线审计 + 宿主内插件：看清 DSH 会话的成本去向并给出可执行处方。",
   "type": "module",
   "bin": {
     "dsh-audit": "./bin/dsh-audit.mjs"
   },
+  "workspaces": [
+    "packages/dsh-audit-plugin",
+    "packages/dsh-audit-probe"
+  ],
   "scripts": {
     "audit": "node bin/dsh-audit.mjs",
-    "test": "node --test test/metrics.test.mjs"
+    "test": "node --test test/metrics.test.mjs && node --test test/plugin.test.mjs && node --test test/plugin-audit.test.mjs",
+    "sync:core": "node scripts/sync-core.mjs"
   },
   "engines": {
     "node": ">=22.15"

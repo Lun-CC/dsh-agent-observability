@@ -248,9 +248,20 @@ export function analyze(loaded) {
   const systemEvents = of('system/message');
   const systemTokensEst = estimateTokens(systemEvents.map((e) => messageText(e.data?.message)).join('\n'));
 
+  // session 事件有两种形状：磁盘上是扁平字段（{type,version,id,cwd,...}），
+  // 宿主内由快照合成的可能是 data 包装。两种都认，避免 header 变成 undefined。
+  const sessionEvent = of('session')[0];
+  const headerSource = sessionEvent && (sessionEvent.data?.id ? sessionEvent.data : sessionEvent);
+
   return {
-    header: header
-      ? { id: header.id, cwd: header.cwd, createdAt: header.createdAt, agentPreset: header.agentPreset, version: header.version }
+    header: headerSource
+      ? {
+          id: headerSource.id,
+          cwd: headerSource.cwd,
+          createdAt: headerSource.createdAt,
+          agentPreset: headerSource.agentPreset,
+          version: headerSource.version,
+        }
       : null,
     frames: loaded.frames,
     events: ev.length,
@@ -267,6 +278,8 @@ export function analyze(loaded) {
       bytesDecoded: loaded.bytesDecoded,
       badLines: loaded.badLines,
       frameWarnings: loaded.frameWarnings,
+      inHost: loaded.inHost ?? false,
+      eventsFrom: loaded.eventsFrom ?? null,
     },
   };
 }

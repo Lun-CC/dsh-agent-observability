@@ -7,6 +7,55 @@
 
 ---
 
+## [0.5.0] - 2026-10-21
+
+插件化。新增宿主内运行的 DSH 插件与侦察插件，用一方服务取代离线解析，
+并把「平台定价的逐节点 token」接进报告 —— 这是离线 CLI 做不到的部分。
+
+### 新增
+
+- `packages/dsh-audit-plugin/`：真正的 DSH 插件。挂在 `agent/turn-stopping` 与 `session/flush`，
+  `readSession()` 取事件、`tokenMeter.measure()` 取平台定价，报告写入 `$DSH_HOME/dsh-audit/`
+- `packages/dsh-audit-probe/`：侦察插件。dump 服务方法名、事件负载字段、`measure()` 真实返回
+- `lib/adapter.mjs`：把 `readSession` 快照归一成分析内核的输入，并给节点打上「系统提示 / 用户消息 / 工具结果 · read」标签
+- `scripts/sync-core.mjs`：把 `src/lib` 同步进插件包（保持单一真源），并校验相对依赖完整性
+- 报告新增「平台定价」区块：`baseline.kind`、`logRevision`、逐节点 token 与事件标签
+- 证据：`2026-10-21-探针实测记录.jsonl`、`2026-10-21-探针摘要.json`、
+  `2026-10-21-readSession形状.json`、`2026-10-21-宿主内插件报告样本.txt`
+- 测试 10 → 21（新增插件冒烟 4、适配与端到端 7）
+
+### 修复
+
+- **`inject` 不能为空数组**：Cordis 下未注入的服务读取会抛
+  `cannot get property "x" without inject`，首版插件因此拿不到任何服务
+- **`session/flush` 的 payload 就是 Session**：首版按 `{ session }` 包装去找，永远拿不到，
+  `measure()` 调用不成立
+- **`readSession` 的头部字段是 `snapshot.session` 不是 `snapshot.header`**：缺失时报告会话 id 显示成 `?`。
+  同时 `analyze()` 改为兼容两种形状（磁盘上的扁平字段 / 宿主内的 `data` 包装）
+- **宿主内模式打印了无意义的磁盘统计**（`0 B → 解压 0 B · 0 帧`）：改为打印来源与事件路径
+- `plugin.test.mjs` 的 `inject` 断言随实际约束更新（由 `[]` 改为三个必需服务）
+
+### 优化
+
+- 插件全部副作用包在 try/catch，失败只写 `errors.log`，绝不向宿主事件链抛异常
+- 同一 turn 内多次 flush 用 `minIntervalMs` 去抖，避免重复计算
+- `debugShape` 形状诊断默认关闭（形状已确认），需要时再开
+
+### 移除
+
+- 移除「把插件写成 bundle 清单包」的设想：`dsh.bundle` 是补丁清单层，
+  叶子插件只需一个 Cordis 模块 + profile 里一条 `insert` 补丁
+
+### 已知限制
+
+- `ctx.tools.register` 的工具注册**未启用**：需要 `output.render` 的 ContentBlock 契约，
+  而本轮测试环境（profile 副本）被
+  `400 Illegal API invocation from an unapproved channel` 拦住，无法真机验证
+- 宿主内未观测到 `baseline.kind = usage` 的样本：该值需要一次成功的 provider 调用作锚点，
+  而渠道校验只在官方客户端实例上通过
+
+---
+
 ## [0.4.1] - 2026-10-21
 
 真机验证后修正。用 `dsh web`（workbuddy provider，用户配额）跑了一个 6 步真实任务，

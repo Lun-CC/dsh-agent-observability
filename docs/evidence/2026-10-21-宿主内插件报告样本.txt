@@ -1,0 +1,18 @@
+
+会话 session-85cd41c9-1287-4b55-81a8-3dd2726d973c · preset standard
+工作目录 E:\aibuild
+来源 sessionQuery（宿主内）· 24 事件 · 事件路径 snapshot.events
+
+══ 跳过 ══════════════════════════════════════════
+未发生任何模型调用（24 个事件，无 assistant/message）。空会话或中断会话，不产出账单。
+
+══ 平台定价（tokenMeter.measure，实测）══════════
+baseline.kind = estimated · logRevision 23 · 表面节点 4
+表面定价累计 2,512 token（surfaceTokens 2,512，请求压力 10,729）
+注意：kind 不是 usage，说明没有可复用的 provider 用量锚点，逐节点数字偏估算口径。
+
+  token   seq   事件
+   1,986     8   系统提示
+     392    11   用户消息
+     121    10   用户消息
+      13     9   用户消息

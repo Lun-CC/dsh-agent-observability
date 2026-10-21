@@ -1,9 +1,16 @@
 # dsh-audit
 
-离线审计 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的会话日志，
+审计 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的会话成本，
 **输出结论与可执行处方，而不是一张时间轴。**
 
 > 不是「看 agent 干了什么」，是「哪一步白花了钱，改什么能省回来」。
+
+两种运行方式，同一套分析内核：
+
+| 模式 | 入口 | 数据来源 | 能拿到什么 |
+|---|---|---|---|
+| **离线 CLI** | `bin/dsh-audit.mjs` | 本地 `session.v4.jsonl.zstd` | 事件、provider usage、按字符估算的结果体量 |
+| **宿主内插件** | `packages/dsh-audit-plugin` | `ctx.sessionQuery` + `ctx.tokenMeter` | 上述全部，外加**平台按实际路由定价的逐节点 token** |
 
 ---
 
@@ -43,6 +50,54 @@ node bin/dsh-audit.mjs ~/.dsh/sessions --json
 不需要启动 DSH，不需要 API key —— 只读本地已落盘的 `session.v4.jsonl.zstd`。
 
 样本输出：`docs/evidence/2026-10-21-真实会话审计报告.txt`
+
+---
+
+## 在 DSH 内运行（插件）
+
+插件挂在 profile 里，每个 turn 结束自动审计当前会话，写到 `$DSH_HOME/dsh-audit/`：
+
+```
+$DSH_HOME/dsh-audit/latest.txt              最近一次的完整报告
+$DSH_HOME/dsh-audit/report-<sessionId>.txt  按会话归档
+$DSH_HOME/dsh-audit/errors.log              仅出错时出现，宿主内绝不抛异常
+```
+
+安装（不改你的 `web` profile 之外的任何东西；建议先复制一份 profile 试）：
+
+```bash
+# 1. 同步分析内核（src/lib → 插件的 lib/core，单一真源）
+node scripts/sync-core.mjs
+
+# 2. 把插件放进 profile 的 node_modules
+cp -r packages/dsh-audit-plugin ~/.dsh/profiles/<profile>/node_modules/dsh-audit-plugin
+
+# 3. 在 profile 的 cordis.patch.yml 末尾插入挂载条目
+#    注意必须是 insert 形式：id+name 只能改已有条目，凭空加会被跳过并告警
+cat >> ~/.dsh/profiles/<profile>/cordis.patch.yml <<'YAML'
+
+- insert:
+    - id: dsh-audit
+      name: dsh-audit-plugin
+YAML
+```
+
+### 宿主内的硬约束（都是实测踩出来的，不是文档写的）
+
+| 事实 | 后果 |
+|---|---|
+| 不声明 `inject` 就读不到任何服务 | 直接访问 `ctx.tokenMeter` 抛 `cannot get property "x" without inject`，`inject` 不能是空数组 |
+| `session/flush` 的 payload **本身就是 Session** | 不是 `{ session }` 包装，直接传给 `measure()` |
+| `readSession()` 返回 `{ session, inheritedEventCount, events }` | 头部在 `session` 上，不叫 `header`；事件流里不含 `session` 类型事件，需合成一条否则报告头显示 `?` |
+| `listEvents()` 只返回 `{ sessionId, seq, type, time, surface }` | **没有 `data`**，做分析必须用 `readSession` |
+| `measure()` 的 `baseline.kind` 有 `none` / `estimated` / `usage` 三种 | 空会话是 `none`；无成功用量锚点时是 `estimated`；只有 `usage` 才可当实测口径 |
+| `measure()` 的 `totalTokens` ≠ 账单 | 实测 `totalTokens` 10729 而 `surfaceTokens` 2512；逐节点 `nodes[]` 才是可用信息 |
+| 复制出来的 profile 跑不了模型调用 | 被 `400 Illegal API invocation from an unapproved channel` 拦下 —— 渠道校验按官方客户端，不是凭证问题 |
+
+因此插件的定位很明确：**`tokenMeter` 是归因器件，不是计费器件。**
+账单总额仍以 `assistant/message.data.usage` 为准；`tokenMeter.nodes[]` 用来回答「这笔钱记在谁头上」。
+
+宿主内样本：`docs/evidence/2026-10-21-宿主内插件报告样本.txt`
 
 ---
 
@@ -87,18 +142,22 @@ node bin/dsh-audit.mjs ~/.dsh/sessions --json
 ## 目录
 
 ```
-bin/dsh-audit.mjs        CLI 入口
-src/lib/session.mjs      多帧 zstd 解码 + 日志加载 + token 估算
-src/lib/analyze.mjs      度量与归因模型（口径定义都在这里）
-src/lib/prescribe.mjs    处方规则 + 弃权机制
-src/lib/report.mjs       文本报告
-test/metrics.test.mjs    口径回归测试
-docs/                    立项备忘、可行性判定、原始数据、样本报告
+bin/dsh-audit.mjs                    离线 CLI 入口
+src/lib/session.mjs                  多帧 zstd 解码 + 日志加载 + token 估算
+src/lib/analyze.mjs                  度量与归因模型（口径定义都在这里）
+src/lib/prescribe.mjs                处方规则 + 弃权机制
+src/lib/report.mjs                   文本报告
+packages/dsh-audit-plugin/           宿主内插件（lib/core 由 sync-core 生成）
+packages/dsh-audit-probe/            侦察插件：dump 服务面、事件负载、measure 返回
+scripts/sync-core.mjs                把 src/lib 同步进插件包
+test/                                口径 / 插件 / 适配 三层回归测试
+docs/                                立项备忘、可行性判定、实测证据、样本报告
 ```
 
 ## 下一步
 
-- [ ] 插件化：包成 DSH bundle，用 `ctx.sessionQuery` + `ctx.tokenMeter` 取代离线解析
+- [x] 插件化：用 `ctx.sessionQuery` + `ctx.tokenMeter` 取代离线解析
+- [ ] 注册 `audit_session` 工具，让 agent 自己也能查（需要先在官方客户端里验证 `ctx.tools.register` 的 `output.render` 契约）
 - [ ] 插件级 schema 归因（静态 manifest 对齐）
 - [ ] compaction 事件接入后校正 carry 模型
 - [ ] 预执行拦截（`tools/pre-execute`）作为处方的执行端，而不只是建议
