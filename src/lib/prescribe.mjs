@@ -38,6 +38,7 @@ export function prescribe(model) {
 
     out.push({
       id: 'barren-steps',
+      label: '整步空跑',
       severity: barren.length >= 2 || cost / Math.max(1, totals.stepCostReal) > 0.15 ? 'high' : 'medium',
       title: `${barren.length} 步完全无产出（工具全失败），占会话总成本 ${pct(cost / Math.max(1, totals.stepCostReal))}`,
       finding: `这 ${barren.length} 步发起了 ${barren.reduce((a, s) => a + s.toolCalls, 0)} 次工具调用，全部失败，没有带回任何新信息，但每一步都付了完整上下文的价格。${
@@ -76,6 +77,7 @@ export function prescribe(model) {
       const saving = offenders.reduce((a, c) => a + Math.max(0, c.resultTokens - MIN_RESULT_TOKENS) * c.carrySteps, 0);
       out.push({
         id: 'spill',
+      label: '工具结果未落盘',
         severity: 'medium',
         title: `${offenders.length} 条工具结果未走 spill，在上下文里滞留到会话结束`,
         finding: `最大一条估算 ${fmt(offenders[0].resultTokens)} token，被重发 ${offenders[0].carrySteps} 次。`,
@@ -104,6 +106,7 @@ export function prescribe(model) {
     const wasted = calls.filter((c) => seqSet.has(c.seq)).reduce((a, c) => a + c.resultTokens, 0);
     out.push({
       id: 'repeat-failure',
+      label: '重复执行',
       severity: 'high',
       title: `${badRepeats.length} 组动作被完全重复执行，且至少失败一次`,
       finding: '同一工具 + 同一组参数被执行多次。这类重复几乎不产生新信息。',
@@ -128,6 +131,7 @@ export function prescribe(model) {
   } else if (totals.hitRate < CACHE_HIT_FLOOR) {
     out.push({
       id: 'cache',
+      label: '缓存失效',
       severity: totals.effInputReal > 100_000 ? 'high' : 'medium',
       title: `前缀缓存命中率仅 ${pct(totals.hitRate)}，每次请求都在重算上下文`,
       finding: `实测上下文体量 ${fmt(totals.effInputReal)} token，命中缓存 ${fmt(totals.cacheReadReal)} token。前缀一变，后面全部失效。`,
@@ -155,6 +159,7 @@ export function prescribe(model) {
     const top = heavy.sort((a, b) => b.usage.inputTokens - a.usage.inputTokens)[0];
     out.push({
       id: 'heavy-ingest',
+      label: '一次性读太多',
       severity: cost / Math.max(1, totals.totalReal) > 0.1 ? 'high' : 'medium',
       title: `${heavy.length} 步一次性读入大量内容，合计 ${fmt(cost)} token 按未缓存全价计价`,
       finding: `工具结果在上一步追加，只会在下一步被首次计价且不走缓存折扣。${top ? `第 ${top.step} 步未缓存输入 ${fmt(top.usage.inputTokens)} token，其中约 ${pct(top.ingest.share)} 来自上一步的工具结果。` : ''}`,
@@ -182,6 +187,7 @@ export function prescribe(model) {
     if (ratio >= GROWTH_RATIO_FLOOR) {
       out.push({
         id: 'context-growth',
+      label: '上下文只增不减',
         severity: ratio >= 3 ? 'high' : 'medium',
         title: `上下文体量从 ${fmt(first)} 涨到 ${fmt(last)}（×${ratio.toFixed(1)}），全程只增不减`,
         finding: '没有任何回收机制，每步的请求都包含之前所有的工具结果。',
@@ -202,6 +208,7 @@ export function prescribe(model) {
   if (system.tokensEst > 0 && firstInput > 0 && system.tokensEst / firstInput > 0.3) {
     out.push({
       id: 'static-floor',
+      label: '静态底噪',
       severity: 'medium',
       title: `静态上下文约占首步体量的 ${pct(system.tokensEst / firstInput)}，每个请求都在重复支付`,
       finding: `system/message 估算 ${fmt(system.tokensEst)} token，首步体量 ${fmt(firstInput)} token。这部分与任务无关。`,

@@ -21,9 +21,9 @@ const { renderPage, injectEntry, ENTRY_JS, ENTRY_SNIPPET } = await import('../pa
 
 const usage = (i, c, o) => ({ inputTokens: i, cacheReadTokens: c, cacheWriteTokens: 0, outputTokens: o, totalTokens: i + c + o });
 
-function snapshot(id) {
+function snapshot(id, parentId = null) {
   return {
-    session: { id, cwd: 'E:\\x', createdAt: 1, version: 4, agentPreset: 'standard' },
+    session: { id, cwd: 'E:\\x', createdAt: 1, version: 4, agentPreset: 'standard', parentId },
     inheritedEventCount: 0,
     events: [
       { seq: 2, type: 'assistant/message', time: 2, data: { turn: 1, step: 1, usage: usage(9000, 0, 200) } },
@@ -49,7 +49,7 @@ function fakeCtx() {
       if (name === 'tokenMeter') return { measure: () => ({ logRevision: 1, baseline: { kind: 'usage' }, totalTokens: 1, surfaceTokens: 1, nodes: [] }) };
       return undefined;
     },
-    sessionQuery: { readSession: async (id) => snapshot(id) },
+    sessionQuery: { readSession: async (id) => snapshot(id, id.includes('child') ? 'session-ui' : null) },
     _webServer: {
       register(route) {
         routes.set(route.path, route);
@@ -98,6 +98,16 @@ test('页面与入口片段自包含、无外部资源', () => {
   assert.match(ENTRY_JS, /dca-entry/);
 });
 
+test('页面内联脚本可被解析（模板写错会整页白屏）', () => {
+  const page = renderPage();
+  const m = page.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(m, '页面应有内联脚本');
+  assert.doesNotThrow(() => new Function(m[1]), '内联脚本必须语法正确');
+  const entry = ENTRY_JS.match(/^\(function/);
+  assert.ok(entry, '入口脚本应是可执行表达式');
+  assert.doesNotThrow(() => new Function(ENTRY_JS));
+});
+
 test('injectEntry 注入到 </body> 前，且幂等', () => {
   const once = injectEntry('<html><body>hi</body></html>');
   assert.ok(once.includes('dca-entry'));
@@ -137,6 +147,40 @@ test('api/list 返回报告列表与 latest', async () => {
   assert.ok(Array.isArray(data.reports) && data.reports.length >= 1);
   assert.equal(data.latest, 'session-ui');
   assert.equal(data.reports[0].id, 'session-ui');
+});
+
+test('摘要带结构化建议（标签 + 动作 + 可省区间）', async () => {
+  await bootWithReport();
+  const s = JSON.parse(readFileSync(join(home, 'dsh-audit', 'report-session-ui.json'), 'utf8'));
+  assert.ok(Array.isArray(s.prescriptions));
+  assert.equal(s.rootId, 'session-ui');
+  assert.equal(s.top, true);
+  // 首屏那句话必须短：它不是 headline，不能把数字再抄一遍
+  assert.ok(typeof s.verdict === 'string' && s.verdict.length > 0);
+  assert.ok(s.verdict.length < 60, `verdict 应短，实际 ${s.verdict.length} 字：${s.verdict}`);
+  assert.doesNotMatch(s.verdict, /实测 .* token \/ .* 次请求/, 'verdict 不该重复账单数字');
+});
+
+test('一次对话 = 一条记录：subagent 归到主会话下', async () => {
+  const ctx = await bootWithReport();
+  // 子会话（parentId 指向主会话）
+  ctx._h['session/flush']({ header: { id: 'session-ui-child', parentId: 'session-ui', delegationDepth: 1 }, log: {} });
+  await tick(160);
+
+  const list = await call(ctx._routes.get('/dsh-cost-audit/api/list'));
+  const data = JSON.parse(list.body);
+  const conv = data.conversations.find((c) => c.rootId === 'session-ui');
+  assert.ok(conv, '应有 session-ui 这条对话');
+  assert.equal(conv.sessions, 2, '主会话 + 1 个子会话');
+  assert.equal(conv.subSessions, 1);
+  assert.equal(conv.primaryId, 'session-ui', '详情入口应是主会话，不是 subagent');
+  assert.equal(data.conversations.length, 1, '同一次对话不应被拆成两条');
+
+  // 详情里能拿到子会话成本
+  const rep = await call(ctx._routes.get('/dsh-cost-audit/api/report'), { url: '/dsh-cost-audit/api/report?id=session-ui' });
+  const detail = JSON.parse(rep.body);
+  assert.equal(detail.siblings.length, 1);
+  assert.equal(detail.siblings[0].id, 'session-ui-child');
 });
 
 test('api/report 返回摘要与正文；非法 id 拒绝', async () => {

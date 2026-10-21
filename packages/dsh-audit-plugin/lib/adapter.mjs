@@ -75,6 +75,9 @@ export function loadedFromSnapshot(snapshot, file = '(in-host)') {
         createdAt: header.createdAt,
         version: header.version,
         agentPreset: header.agentPreset,
+        // parentSession 决定"这次算哪一次对话"，漏了它会让 subagent 被当成独立对话
+        parentSession: header.parentSession ?? header.parentId ?? null,
+        origin: header.origin ?? null,
         isSeeded: header.isSeeded,
         delegationDepth: header.delegationDepth,
       },

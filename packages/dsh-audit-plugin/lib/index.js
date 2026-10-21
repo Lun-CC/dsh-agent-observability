@@ -164,9 +164,11 @@ export function apply(ctx, config = {}) {
     }
   };
 
+  // 实测字段名是 parentSession（0.7.0 误用 parentId，导致判空永远成立、
+  // subagent 会顶掉 latest.txt）。两个名字都认。
   const isTopLevel = (session) => {
     const h = session?.header ?? {};
-    return (h.parentId ?? null) === null && (h.delegationDepth ?? 0) === 0;
+    return (h.parentSession ?? h.parentId ?? null) === null && (h.delegationDepth ?? 0) === 0;
   };
 
   async function audit(session) {
@@ -291,7 +293,7 @@ export function apply(ctx, config = {}) {
             try {
               latest = JSON.parse(readFileSync(join(outDir, 'latest.json'), 'utf8')).id ?? null;
             } catch { /* 还没有顶层报告 */ }
-            return { json: { reports, latest, outDir } };
+            return { json: { conversations: groupConversations(reports), reports, latest, outDir } };
           },
         ],
         [
@@ -308,7 +310,12 @@ export function apply(ctx, config = {}) {
               text = readFileSync(join(outDir, `report-${id}.txt`), 'utf8');
             } catch { /* 不存在 */ }
             if (!summary && !text) return { status: 404, json: { error: 'not found' } };
-            return { json: { summary, text } };
+            // 同一对话下的其它会话（subagent），用于在详情里给出"子会话成本"
+            const rootId = summary?.rootId ?? summary?.id ?? id;
+            const siblings = listSummaries(outDir)
+              .filter((r) => (r.rootId ?? r.id) === rootId && r.id !== id)
+              .map((r) => ({ id: r.id, top: !!r.top, totals: r.totals, generatedAt: r.generatedAt }));
+            return { json: { summary, text, siblings } };
           },
         ],
       ];
@@ -377,6 +384,59 @@ export function apply(ctx, config = {}) {
       log('ui', String(e?.message ?? e));
     }
   }
+}
+
+/**
+ * 把按会话的报告聚合成"一次对话"。
+ *
+ * 为什么必须聚合：一次任务里 subagent 会各留一个会话（实测：主会话 + 2 个 subagent
+ * = 3 份报告）。UI 上按会话平铺，用户看到的是"同一次对话被分析了三次"，
+ * 既碎片又对不上账。这里按 rootId 归组，总成本求和，主会话当详情入口。
+ */
+function groupConversations(reports) {
+  const groups = new Map();
+  for (const r of reports) {
+    const key = r.rootId ?? r.id;
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        rootId: key,
+        primaryId: null,
+        hasTop: false,
+        sessions: 0,
+        subSessions: 0,
+        totalReal: 0,
+        requests: 0,
+        toolCalls: 0,
+        failedCalls: 0,
+        latestAt: '',
+        headline: '',
+        checklist: [],
+        parts: [],
+      };
+      groups.set(key, g);
+    }
+    const totals = r.totals ?? {};
+    g.sessions += 1;
+    g.totalReal += totals.totalReal ?? 0;
+    g.requests += totals.requests ?? 0;
+    g.toolCalls += totals.toolCalls ?? 0;
+    g.failedCalls += totals.failedCalls ?? 0;
+    g.parts.push({ id: r.id, top: !!r.top, totalReal: totals.totalReal ?? 0, requests: totals.requests ?? 0, generatedAt: r.generatedAt });
+    if (!g.latestAt || String(r.generatedAt ?? '') > g.latestAt) g.latestAt = r.generatedAt ?? '';
+
+    // 详情入口优先主会话；没有主会话时用最新一份（reports 已按时间倒序）
+    const takeOver = (r.top && !g.hasTop) || !g.primaryId;
+    if (takeOver) {
+      g.primaryId = r.id;
+      g.hasTop = g.hasTop || !!r.top;
+      g.headline = r.headline ?? '';
+      g.checklist = r.prescriptions ?? [];
+    }
+  }
+  return [...groups.values()]
+    .map(({ hasTop, ...g }) => ({ ...g, subSessions: g.sessions - 1 }))
+    .sort((a, b) => String(b.latestAt).localeCompare(String(a.latestAt)));
 }
 
 /** 读服务但不要求 inject（Cordis 的 ctx.get 语义），失败返回 null。 */
@@ -463,6 +523,18 @@ function allowedRequest(req, ctx) {
   }
 }
 
+/** 一句话判断：UI 首屏只留这一行，不重复卡片里的数字。 */
+function buildVerdictLine(conclusions, totals) {
+  if (!(totals.requests > 0)) return '空会话，没有模型调用，不产出账单。';
+  const top = conclusions[0];
+  if (!top) return '未发现结构性浪费，不需要改配置。';
+  const total = Math.max(1, totals.totalReal ?? 0);
+  const lo = Math.round(((top.prescription?.expectedSavingTokens?.[0] ?? 0) / total) * 100);
+  const hi = Math.round(((top.prescription?.expectedSavingTokens?.[1] ?? 0) / total) * 100);
+  const share = lo === hi ? `${lo}%` : `${lo}–${hi}%`;
+  return `${top.label ?? top.id}是最值得先改的一条，预计能省回 ${share} 的成本。`;
+}
+
 /**
  * 供 Web UI 的结构化摘要。
  * 导出是为了让 scripts/backfill-summaries.mjs 能对旧版遗留的 .txt 报告补出 .json，
@@ -471,8 +543,11 @@ function allowedRequest(req, ctx) {
 export function buildSummary({ id, top, loaded, model, verdict, measured }) {
   const t = model.totals ?? {};
   const denom = (t.inputReal ?? 0) + (t.cacheReadReal ?? 0);
+  const parentId = model.header?.parentSession ?? null;
   return {
     id,
+    // 一次对话 = 一个 rootId：subagent 会话归到发起它的主会话下
+    rootId: parentId ?? id,
     top,
     generatedAt: loaded.generatedAt,
     session: { cwd: model.header?.cwd ?? null, preset: model.header?.agentPreset ?? null, events: model.events },
@@ -485,7 +560,18 @@ export function buildSummary({ id, top, loaded, model, verdict, measured }) {
       barrenSteps: t.barrenSteps ?? 0,
       hitRate: denom > 0 ? (t.cacheReadReal ?? 0) / denom : null,
     },
-    conclusions: (verdict.conclusions ?? []).map((c) => ({ id: c.id, title: c.title, severity: c.severity, confidence: c.confidence })),
+    // 结构化建议：UI 直接用，不必解析正文
+    prescriptions: (verdict.conclusions ?? []).map((c) => ({
+      id: c.id,
+      label: c.label ?? c.id,
+      severity: c.severity,
+      confidence: c.confidence,
+      action: c.prescription?.action ?? '',
+      howTo: c.prescription?.howTo ?? '',
+      saving: c.prescription?.expectedSavingTokens ?? [0, 0],
+    })),
+    // 一句话判断（UI 首屏用）。headline 保留给文件/其它消费者，它比这个长得多。
+    verdict: buildVerdictLine(verdict.conclusions ?? [], t),
     measured: measured ? { baselineKind: measured.baselineKind, nodeSum: measured.nodeSum, surfaceTokens: measured.surfaceTokens } : null,
   };
 }

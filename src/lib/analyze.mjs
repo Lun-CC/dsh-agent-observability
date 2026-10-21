@@ -261,6 +261,11 @@ export function analyze(loaded) {
           createdAt: headerSource.createdAt,
           agentPreset: headerSource.agentPreset,
           version: headerSource.version,
+          // 用于把 subagent 会话归到同一次对话下（UI 按对话聚合，而不是按会话碎片化）
+          // 实测字段名是 parentSession（不是 parentId）；两者都认，兼容不同版本
+          parentSession: headerSource.parentSession ?? headerSource.parentId ?? null,
+          delegationDepth: headerSource.delegationDepth ?? 0,
+          origin: headerSource.origin ?? null,
         }
       : null,
     frames: loaded.frames,

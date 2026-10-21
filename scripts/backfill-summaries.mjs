@@ -26,6 +26,7 @@ const OUT_DIR = join(DSH_HOME, 'dsh-audit');
 const SESSIONS = join(DSH_HOME, 'sessions');
 
 const dryRun = process.argv.includes('--dry-run');
+const force = process.argv.includes('--force'); // 覆盖已有 .json（摘要结构升级后用）
 
 /** 在 $DSH_HOME/sessions 里按目录名找会话目录（形如 session-<uuid>）。 */
 function findSessionDir(id) {
@@ -55,7 +56,7 @@ let failed = 0;
 for (const f of txts) {
   const id = f.slice('report-'.length, -'.txt'.length);
   const jsonPath = join(OUT_DIR, `report-${id}.json`);
-  if (existsSync(jsonPath)) {
+  if (existsSync(jsonPath) && !force) {
     skipped++;
     continue;
   }
@@ -73,7 +74,7 @@ for (const f of txts) {
     const verdict = prescribe(model);
     const summary = buildSummary({
       id,
-      top: !model.header?.parentId,
+      top: !model.header?.parentSession,
       loaded,
       model,
       verdict,
