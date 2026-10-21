@@ -1,0 +1,22 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 本地临时与调试
+.tmp/
+*.log
+*.tmp
+
+# 运行产物
+out/
+dist/
+coverage/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本机 DSH 会话日志不入库（体积大且含隐私）
+*.jsonl.zstd

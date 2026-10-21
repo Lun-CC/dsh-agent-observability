@@ -1,0 +1,135 @@
+/**
+ * DSH session log 读取与基础文本工具。
+ *
+ * 关键事实（2026-10-21 实测）：
+ *   session 日志落盘为 `session.v4.jsonl.zstd`，且 append-only —— 每次 flush 追加一个
+ *   独立 zstd 帧。Node 的 zstdDecompressSync 只解第一帧，必须逐帧拆分再拼接。
+ *   实测样本：46,190 字节 / 60 帧 / 解压后 130,547 字节 / 111 条事件。
+ */
+
+import { zstdDecompressSync } from 'node:zlib';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+/** 找出所有 zstd 帧起始偏移。 */
+function frameOffsets(buf) {
+  const out = [];
+  let p = 0;
+  while (p < buf.length) {
+    const i = buf.indexOf(MAGIC, p);
+    if (i === -1) break;
+    out.push(i);
+    p = i + 4;
+  }
+  return out;
+}
+
+/**
+ * 解码多帧拼接的 zstd 日志。
+ * 帧边界按 magic 扫描；若某帧单独解压失败，则与后续帧合并重试（magic 可能出现在压缩数据内部）。
+ */
+export function decodeZstdLog(buf) {
+  const offs = frameOffsets(buf);
+  if (offs.length === 0) throw new Error('不是 zstd 数据：未找到帧头');
+
+  const chunks = [];
+  let warnings = 0;
+
+  for (let i = 0; i < offs.length; i++) {
+    let decoded = null;
+    let consumedTo = i;
+    for (let j = i; j < offs.length; j++) {
+      const end = j + 1 < offs.length ? offs[j + 1] : buf.length;
+      try {
+        decoded = zstdDecompressSync(buf.subarray(offs[i], end)).toString('utf8');
+        consumedTo = j;
+        break;
+      } catch {
+        /* 合并下一帧再试 */
+      }
+    }
+    if (decoded === null) {
+      warnings++;
+    } else {
+      chunks.push(decoded);
+      i = consumedTo;
+    }
+  }
+
+  return { text: chunks.join(''), frames: offs.length, warnings };
+}
+
+/** 读取并解析一个 session 目录（或直接给 .zstd 文件）。 */
+export function loadSession(target) {
+  let file = target;
+  if (statSync(target).isDirectory()) {
+    const hit = readdirSync(target).find((n) => n.endsWith('.jsonl.zstd'));
+    if (!hit) throw new Error(`目录内没有 .jsonl.zstd：${target}`);
+    file = join(target, hit);
+  }
+
+  const buf = readFileSync(file);
+  const { text, frames, warnings } = decodeZstdLog(buf);
+
+  const events = [];
+  let badLines = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      badLines++;
+    }
+  }
+
+  return {
+    file,
+    bytesOnDisk: buf.length,
+    frames,
+    frameWarnings: warnings,
+    bytesDecoded: text.length,
+    badLines,
+    events: events.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)),
+  };
+}
+
+/** 列出 sessions 根目录下全部 session 目录。 */
+export function listSessionDirs(root) {
+  const out = [];
+  for (const group of readdirSync(root)) {
+    const gp = join(root, group);
+    if (!statSync(gp).isDirectory()) continue;
+    for (const name of readdirSync(gp)) {
+      const sp = join(gp, name);
+      if (statSync(sp).isDirectory() && name.startsWith('session-')) out.push(sp);
+    }
+  }
+  return out;
+}
+
+/**
+ * 启发式 token 估算。CJK 按 1 token/字（偏保守上界），其余按 3.6 字符/token。
+ * 这是估算，不是测量 —— 测量值来自 assistant/message.data.usage。
+ */
+export function estimateTokens(text) {
+  if (!text) return 0;
+  let cjk = 0;
+  let other = 0;
+  for (const ch of text) {
+    if (ch.codePointAt(0) >= 0x2e80) cjk++;
+    else other++;
+  }
+  return Math.ceil(cjk + other / 3.6);
+}
+
+/** 从 message.content 抽出纯文本。 */
+export function messageText(message) {
+  if (!message?.content) return '';
+  if (typeof message.content === 'string') return message.content;
+  return message.content
+    .map((b) => (typeof b === 'string' ? b : b?.text ?? (b?.type === 'tool-call' ? b.arguments ?? '' : '')))
+    .filter(Boolean)
+    .join('\n');
+}
