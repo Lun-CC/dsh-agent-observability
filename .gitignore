@@ -12,6 +12,7 @@ node_modules/
 out/
 dist/
 coverage/
+*.tgz
 
 # 编辑器与系统
 .vscode/
@@ -19,9 +20,5 @@ coverage/
 .DS_Store
 Thumbs.db
 
-# 本机 DSH 会话日志不入库（体积大且含隐私）
+# 本机会话日志不入库（体积大且含隐私）
 *.jsonl.zstd
-
-# 打包时由 scripts/prepare-pack.mjs 临时复制，postpack 删除；
-# 单一真源是仓库根的 CHANGELOG.md
-packages/dsh-audit-plugin/CHANGELOG.md

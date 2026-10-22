@@ -12,10 +12,10 @@
 import { statSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadSession, listSessionDirs } from '../src/lib/session.mjs';
-import { analyze } from '../src/lib/analyze.mjs';
-import { prescribe } from '../src/lib/prescribe.mjs';
-import { renderReport } from '../src/lib/report.mjs';
+import { loadSession, listSessionDirs } from '../lib/core/session.mjs';
+import { analyze } from '../lib/core/analyze.mjs';
+import { prescribe } from '../lib/core/prescribe.mjs';
+import { renderReport } from '../lib/core/report.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
