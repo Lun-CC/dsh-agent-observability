@@ -49,7 +49,7 @@ dsh plugin --profile web add file:<绝对路径>/packages/dsh-audit-plugin
 不需要 API key：
 
 ```bash
-dsh-audit ~/.dsh/sessions/--E-aibuild--/session-xxxx      # 分析一个会话目录
+dsh-audit ~/.dsh/sessions/<分组目录>/session-xxxx      # 分析一个会话目录
 dsh-audit ~/.dsh/sessions                                  # 整个 sessions 根目录（多会话速览）
 dsh-audit ~/.dsh/sessions --tool-limit=5                   # 工具表最多列 5 条（也可 --tool-limit 5）
 dsh-audit ~/.dsh/sessions --json                           # 机器可读
@@ -60,6 +60,8 @@ dsh-audit --version                                        # 1.0.0
 参数：`<session 目录 | .jsonl.zstd 文件>`、`--json`、`--tool-limit=<N>` / `--tool-limit N`
 （文本报告工具表最多列 N 条，默认 10）、`-h/--help`、`-V/--version`；未知选项报错。
 退出码：`0` 至少一个会话成功，`1` 全部失败，`2` 参数错误（缺目标 / 路径不存在 / 选项值非法）。
+目标可以是 sessions 根、分组目录、会话目录或 `.jsonl.zstd` 文件（向下递归 3 层，不要求固定
+两级布局；同目录多个日志取 mtime 最新）。路径含中文/空格用引号包住即可。
 没装插件也能一次性运行：
 
 ```bash
@@ -98,7 +100,7 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\dsh-audit"
 
 ```bash
 # bash
-rm -rf "$DSH_HOME/dsh-audit"
+rm -rf "${DSH_HOME:-$HOME/.dsh}/dsh-audit"
 ```
 
 ---
@@ -141,14 +143,14 @@ $DSH_HOME/dsh-audit/debug-snapshot.json     仅 debugShape: true 时出现（排
 http://127.0.0.1:<dsh端口>/dsh-cost-audit/
 ```
 
-路由（挂在宿主的 `ctx.webServer` 上，全部只读 GET）：
+路由（挂在宿主的 `ctx.webServer` 上，读接口为 GET，整改为 POST 且需 `x-dsh-audit` 头）：
 
 | 路由 | 用途 |
 |---|---|
 | `GET /dsh-cost-audit/` | 报告页 |
-| `GET /dsh-cost-audit/api/list` | 报告列表 + 对话聚合 + latest |
-| `GET /dsh-cost-audit/api/report?id=` | 单份摘要 + 正文 + 同对话子会话 |
-| `POST /dsh-cost-audit/api/fix` | 整改 `preview` / `apply` / `revert` |
+| `GET /dsh-cost-audit/api/list` | 报告列表 + 对话聚合 + latest + `profile`（候选/是否需显式选择）+ `lastError`（最近一次处理失败） |
+| `GET /dsh-cost-audit/api/report?id=` | 单份摘要 + 正文 + 同对话子会话 + 写入所用的 `profile` |
+| `POST /dsh-cost-audit/api/fix` | 整改 `preview` / `apply` / `revert`；多 profile 时可带 `profile` 指定写入目标，歧义时拒绝并回传候选 |
 
 实现方式（两种注入通道，覆盖两种宿主形态）：
 
@@ -224,8 +226,9 @@ baseline.kind = estimated · logRevision 23 · 表面节点 4
 
 ## 配置
 
-写在 profile 的 `cordis.patch.yml` 里。profile 目录是 `$DSH_HOME/profiles/<profile>`，
-默认 `$DSH_HOME` 在 Windows 是 `%USERPROFILE%\.dsh`：
+写在 profile 的 `cordis.patch.yml` 里。profile 目录是 `$DSH_HOME/profiles/<profile>`；
+`$DSH_HOME` 未设置时默认 `~/.dsh`（Windows `%USERPROFILE%\.dsh`），bash 里用
+`${DSH_HOME:-$HOME/.dsh}`：
 
 ```yaml
 - id: dsh-cost-audit
@@ -316,6 +319,9 @@ baseline.kind = estimated · logRevision 23 · 表面节点 4
 - token 估算在中文场景高估约 10–20%
 - 每次 flush 全量重算 `readSession` + analyze（同步 CPU）；当前量级可接受，增量解析尚未接入
 - 没有 `export const Config`，因此没有 Web 设置面板，配置只能写 `cordis.patch.yml`
+- 多个 profile 都装了本插件时，自动整改不会按 mtime 猜：页面要求先选择目标 profile
+  （未选/多个候选时拒绝写入并列出候选），只有一个 profile 时自动使用。显式选择走
+  `/api/fix` 的 `profile` 字段或 `scripts/apply-fix.mjs --profile <name>`
 
 完整边界与设计取舍见仓库根 `README.md` 的「已知限制」一节。
 

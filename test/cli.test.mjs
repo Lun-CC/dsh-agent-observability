@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -31,10 +31,8 @@ const usage = (input, cacheRead, output) => ({
 });
 
 /** 造一个会话目录：日志按 3 个帧写入，模拟 append-only 的真实落盘方式。 */
-function makeSession() {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-audit-cli-'));
+function writeFixture(sessionDir) {
   // 按真实布局：<root>/<cwd 分组>/<session-xxx>/session.v4.jsonl.zstd
-  const sessionDir = join(dir, '--E-x--', 'session-cli-fixture');
   mkdirSync(sessionDir, { recursive: true });
 
   const frame1 = [
@@ -53,7 +51,12 @@ function makeSession() {
   const encode = (arr) => zstdCompressSync(Buffer.from(arr.map((o) => JSON.stringify(o)).join('\n') + '\n', 'utf8'));
   // 三个独立帧直接拼接 —— 与 append-only flush 的落盘形态一致
   writeFileSync(join(sessionDir, 'session.v4.jsonl.zstd'), Buffer.concat([encode(frame1), encode(frame2), encode(frame3)]));
+  return sessionDir;
+}
 
+function makeSession() {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-audit-cli-'));
+  writeFixture(join(dir, '--E-x--', 'session-cli-fixture'));
   return dir;
 }
 
@@ -137,4 +140,38 @@ test('未知选项以 2 退出，不静默忽略', () => {
     () => execFileSync(process.execPath, [CLI, '--nope'], { encoding: 'utf8', stdio: 'pipe' }),
     (e) => e.status === 2,
   );
+});
+
+// 下面三条防「换台电脑/换个工作区就找不到会话」的回归：会话目录不一定是
+// sessions/<cwd 分组>/session-<id>/ 的固定两级结构，路径也可能含中文/空格。
+
+test('任意上层目录都能扫到会话：直接给分组目录也能出报告', () => {
+  const dir = makeSession();
+  const [r] = runJson(join(dir, '--E-x--'));
+  assert.equal(r.totals.requests, 2);
+});
+
+test('路径含中文/空格时 CLI 正常工作', () => {
+  const base = mkdtempSync(join(tmpdir(), 'dsh-audit-uni-'));
+  const sessionDir = join(base, '路径 含空格', '工作区 一', 'session-中文');
+  writeFixture(sessionDir);
+  const [r] = runJson(sessionDir);
+  assert.equal(r.totals.requests, 2);
+});
+
+test('一个会话目录有多个日志时取 mtime 最新的（不依赖 readdir 顺序）', () => {
+  const base = mkdtempSync(join(tmpdir(), 'dsh-audit-multi-'));
+  const sessionDir = join(base, 'g', 'session-multi');
+  mkdirSync(sessionDir, { recursive: true });
+  const header = JSON.stringify({ type: 'session', seq: 0, time: 1, version: 4, id: 's', cwd: '/x', agentPreset: 'standard' });
+  const msg = (seq, step) => JSON.stringify({ type: 'assistant/message', seq, time: 2, data: { turn: 1, step, usage: usage(100, 0, 10) } });
+  const log = (n) => zstdCompressSync(Buffer.from([header, ...Array.from({ length: n }, (_, i) => msg(i + 1, i + 1))].join('\n') + '\n', 'utf8'));
+
+  writeFileSync(join(sessionDir, 'a.jsonl.zstd'), log(1));
+  writeFileSync(join(sessionDir, 'b.jsonl.zstd'), log(2));
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(join(sessionDir, 'b.jsonl.zstd'), old, old); // b 更旧 → 应选 a
+
+  const [r] = runJson(sessionDir);
+  assert.equal(r.totals.requests, 1, '应选 mtime 最新的 a.jsonl.zstd');
 });

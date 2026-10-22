@@ -52,16 +52,22 @@ jobs:
       - name: tarball 里确实带上了 bin 与英文 README
         run: |
           cd packages/dsh-audit-plugin
-          npm pack --dry-run --json > /tmp/pack.json
+          # 注意：prepack 会把 sync-core 的进度打进 stdout，污染 `pack --json` 输出；
+          # 文件已由上一 step 的 prepare-pack 准备好，这里用 --ignore-scripts 并显式清理
           node -e "
-          const fs=require('fs');
-          const [r]=JSON.parse(fs.readFileSync('/tmp/pack.json','utf8'));
-          const files=new Set(r.files.map(f=>f.path));
-          for (const need of ['bin/dsh-audit.mjs','lib/index.js','lib/core/analyze.mjs','README.en.md','cordis.patch.yml']) {
-            if(!files.has(need)){console.error('tarball 缺少:',need);process.exit(1)}
+          const { execFileSync } = require('node:child_process');
+          const out = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { encoding: 'utf8' });
+          const [r] = JSON.parse(out);
+          const files = new Set(r.files.map((f) => f.path));
+          for (const need of ['bin/dsh-audit.mjs', 'lib/index.js', 'lib/core/analyze.mjs', 'README.en.md', 'cordis.patch.yml']) {
+            if (!files.has(need)) { console.error('tarball 缺少:', need); process.exit(1); }
           }
-          console.log('tarball 文件数:',files.size,'含 bin/dsh-audit.mjs ✅');
+          for (const bad of ['test/', 'docs/', 'src/', 'node_modules/']) {
+            if ([...files].some((p) => p.startsWith(bad))) { console.error('tarball 混入开发文件:', bad); process.exit(1); }
+          }
+          console.log('tarball 文件数:', files.size, '含 bin/dsh-audit.mjs ✅');
           "
+          node ../../scripts/cleanup-pack.mjs
 
       - name: 图标可复现
         run: |

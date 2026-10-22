@@ -106,6 +106,10 @@ export function apply(ctx, config = {}) {
   const lastRunAt = new Map(); // sessionId -> ms
   const inFlight = new Set();
 
+  /** 最近一次失败（给 /api/list 用：页面能显示"为什么没数据"，而不是静默空白）。 */
+  let lastError = null;
+  const lastWarnAt = new Map(); // phase:message -> ms
+
   const log = (phase, message) => {
     try {
       ensureDir(outDir);
@@ -115,6 +119,21 @@ export function apply(ctx, config = {}) {
       } catch { /* 文件不存在，忽略 */ }
       appendFileSync(file, `${new Date().toISOString()} [${phase}] ${message}\n`, 'utf8');
     } catch { /* 日志失败不能再抛 */ }
+  };
+
+  /**
+   * 记录"形状不认识/处理失败"这类静默故障：写 errors.log（同一秒级重复的
+   * 只记 10 分钟一次，防止每次 flush 刷屏），并保留 lastError 供页面展示。
+   * 回应 P1-3：payload 形状变化时旧实现直接 return，页面空、errors.log 也没有痕迹。
+   */
+  const warn = (phase, message) => {
+    const msg = String(message ?? '');
+    lastError = { phase, message: msg, at: new Date().toISOString() };
+    const key = `${phase}:${msg}`;
+    const now = Date.now();
+    if ((lastWarnAt.get(key) ?? 0) + 600_000 > now) return;
+    lastWarnAt.set(key, now);
+    log(phase, msg);
   };
 
   /** 保留策略：按 mtime 清理过期/超量的 report-*.txt。 */
@@ -187,7 +206,11 @@ export function apply(ctx, config = {}) {
 
   async function audit(session) {
     const id = session?.header?.id;
-    if (!id) return null;
+    // 形状变化（宿主升级）时不再静默：留痕 + 页面可见，否则用户只看到空页面
+    if (!id) {
+      warn('trigger', 'session/flush 载荷里没有 header.id —— 宿主事件形状可能变了，本次不审计');
+      return null;
+    }
     if (inFlight.has(id)) return null;
     const last = lastRunAt.get(id) ?? 0;
     if (Date.now() - last < cfg.minIntervalMs) return null;
@@ -258,7 +281,8 @@ export function apply(ctx, config = {}) {
       prune();
       return { id, text, model, verdict, measured };
     } catch (e) {
-      log('audit', e?.stack ?? String(e));
+      // 报告失败必须留痕：否则页面看起来只是"还没生成"
+      warn('audit', e?.stack ?? String(e));
       return null;
     } finally {
       inFlight.delete(id);
@@ -268,7 +292,7 @@ export function apply(ctx, config = {}) {
   try {
     ctx.on('session/flush', (session) => {
       if (cfg.debugTriggers) log('trigger', `session/flush id=${session?.header?.id ?? '?'} top=${isTopLevel(session)}`);
-      if (!cfg.autoReport || !session?.header?.id) return;
+      if (!cfg.autoReport) return;
       void audit(session);
     });
   } catch (e) {
@@ -351,7 +375,18 @@ export function apply(ctx, config = {}) {
             try {
               latest = JSON.parse(readFileSync(join(outDir, 'latest.json'), 'utf8')).id ?? null;
             } catch { /* 还没有顶层报告 */ }
-            return { json: { conversations: groupConversations(reports), reports, latest, outDir } };
+            const pick = resolveProfileDir(home);
+            // profile：多 profile 时必须让用户选，不能按 mtime 猜（见 fixes.mjs 注释）
+            return {
+              json: {
+                conversations: groupConversations(reports),
+                reports,
+                latest,
+                outDir,
+                profile: { chosen: pick.dir, profiles: pick.profiles, ambiguous: !!pick.ambiguous },
+                lastError,
+              },
+            };
           },
         ],
         [
@@ -374,11 +409,11 @@ export function apply(ctx, config = {}) {
               .filter((r) => (r.rootId ?? r.id) === rootId && r.id !== id)
               .map((r) => ({ id: r.id, top: !!r.top, totals: r.totals, generatedAt: r.generatedAt }));
             // 整改可用性在读时计算：应用/撤销之后立刻反映到页面
+            const pick = resolveProfileDir(home);
             if (summary) {
-              const profileDir = resolveProfileDir(process.env.DSH_HOME || join(homedir(), '.dsh'));
-              summary.prescriptions = decorateFixes(summary.prescriptions, { profileDir, cwd: summary.session?.cwd });
+              summary.prescriptions = decorateFixes(summary.prescriptions, { profileDir: pick.dir, cwd: summary.session?.cwd });
             }
-            return { json: { summary, text, siblings } };
+            return { json: { summary, text, siblings, profile: { chosen: pick.dir, profiles: pick.profiles, ambiguous: !!pick.ambiguous } } };
           },
         ],
         [
@@ -389,11 +424,21 @@ export function apply(ctx, config = {}) {
             if (String(req.headers['x-dsh-audit'] ?? '') !== '1') return { status: 403, json: { error: 'missing x-dsh-audit header' } };
             const body = await readJsonBody(req);
             if (!body || typeof body.id !== 'string') return { status: 400, json: { error: 'bad body' } };
-            const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh');
-            if (body.action === 'preview') return { json: { ok: true, preview: previewFix(body.id, { cwd: body.cwd, profileDir: resolveProfileDir(dshHome) }) } };
+            // profile 由页面显式选择（多 profile 时不能猜）；不传则按"唯一才用"处理
+            const profile = typeof body.profile === 'string' && body.profile ? body.profile : undefined;
+            const pick = resolveProfileDir(home, profile);
+            if (body.action === 'preview') {
+              return {
+                json: {
+                  ok: true,
+                  preview: previewFix(body.id, { cwd: body.cwd, profileDir: pick.dir, profiles: pick.profiles }),
+                  profile: { chosen: pick.dir, profiles: pick.profiles, ambiguous: !!pick.ambiguous },
+                },
+              };
+            }
             const result = body.action === 'revert'
-              ? revertFix(body.id, { dshHome, cwd: body.cwd })
-              : applyFix(body.id, { dshHome, cwd: body.cwd });
+              ? revertFix(body.id, { dshHome: home, cwd: body.cwd, profile })
+              : applyFix(body.id, { dshHome: home, cwd: body.cwd, profile });
             if (result.changed) log('fix', `${body.action} ${body.id} → ${result.file ?? ''}`);
             return { json: { ok: result.changed, ...result } };
           },

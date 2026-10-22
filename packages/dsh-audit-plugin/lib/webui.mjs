@@ -108,11 +108,15 @@ pre{margin:0;padding:0 13px 13px;overflow:auto;font:11.5px/1.5 ui-monospace,SFMo
 button{font:inherit;padding:5px 11px;border-radius:7px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
 button:hover{border-color:var(--accent)}
 .err{color:var(--high)}
+.alert{color:var(--high);font-size:12px}
+.prof-pick{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;margin:0 0 12px;font-size:12.5px}
+.prof-pick select{margin:0 6px;padding:3px 6px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 </style></head>
 <body>
 <header>
   <h1>会话成本报告</h1>
   <span class="muted" id="meta">加载中…</span>
+  <span class="alert" id="alert"></span>
   <button id="refresh" class="spacer">刷新</button>
 </header>
 <main>
@@ -199,7 +203,18 @@ function render(conv, d) {
   const subs = d.siblings || [];
   const subTokens = subs.reduce((a, x) => a + ((x.totals && x.totals.totalReal) || 0), 0);
 
+  // 多 profile 时必须让用户自己选写入目标（与后端「不按 mtime 猜」的约束配套）
+  const prof = (d.profile && d.profile.profiles) || [];
+  const chosen = (d.profile && d.profile.chosen) || '';
+  const profBanner = prof.length > 1
+    ? '<div class="prof-pick">检测到 ' + prof.length + ' 个装了本插件的 profile，整改会写入选中的那个：' +
+      '<select id="dca-profile">' +
+      prof.map((p) => '<option value="' + esc(p.name) + '"' + (p.dir === chosen ? ' selected' : '') + '>' + esc(p.name) + ' — ' + esc(p.dir) + '</option>').join('') +
+      '</select>（选错会改错环境）</div>'
+    : '';
+
   $('#view').innerHTML = \`
+    \${profBanner}
     <div class="cards">
       <div class="card"><div class="k">本对话总消耗</div><div class="v">\${fmt(conv.totalReal)}</div></div>
       <div class="card"><div class="k">请求</div><div class="v">\${fmt(conv.requests)}</div></div>
@@ -215,28 +230,35 @@ function render(conv, d) {
     <details><summary>完整报告（逐步账单、证据、口径）</summary><pre>\${esc(d.text || '(无正文)')}</pre></details>\`;
 }
 
-async function fixAction(p, action, cwd) {
+async function fixAction(p, action, cwd, profile) {
   const r = await fetch('/dsh-cost-audit/api/fix', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-dsh-audit': '1' },
-    body: JSON.stringify({ id: p.id, action, cwd }),
+    body: JSON.stringify({ id: p.id, action, cwd, profile }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || (r.status + ' ' + r.statusText));
   return j;
 }
 
+// 多 profile 时用户在页面选择的写入目标；没有下拉框就交给后端按"唯一才用"处理
+function pickedProfile() {
+  const sel = document.getElementById('dca-profile');
+  return sel ? sel.value : undefined;
+}
+
 async function onFix(p, cwd) {
+  const profile = pickedProfile();
   try {
     if (p.fix && p.fix.applied) {
       if (!confirm('撤销「' + p.fix.title + '」？' + NL + '会删除插件写入的那一段，其它内容不动。')) return;
-      const r = await fixAction(p, 'revert', cwd);
+      const r = await fixAction(p, 'revert', cwd, profile);
       alert(r.message || (r.ok ? '已撤销' : '未变更'));
     } else {
-      const pv = await fixAction(p, 'preview', cwd);
+      const pv = await fixAction(p, 'preview', cwd, profile);
       const text = pv.preview ? (pv.preview.target + NL + pv.preview.text) : '(无预览)';
       if (!confirm('将写入：' + NL + text + NL + '确认？')) return;
-      const r = await fixAction(p, 'apply', cwd);
+      const r = await fixAction(p, 'apply', cwd, profile);
       alert(r.message || (r.ok ? '已应用' : '未变更'));
     }
     await boot();
@@ -264,6 +286,12 @@ async function boot() {
   try {
     const data = await j('/dsh-cost-audit/api/list');
     convs = data.conversations || [];
+    // 静默失败要能在页面上看到：形状变化/审计异常时给出最近一次原因
+    const alertEl = $('#alert');
+    if (alertEl) {
+      const le = data.lastError;
+      alertEl.textContent = le ? ('最近一次审计失败：' + le.phase + ' · ' + String(le.message || '').split(String.fromCharCode(10))[0].slice(0, 140)) : '';
+    }
     renderNav();
     // 默认选"有实际请求"的对话：空会话值得记录，但不该占住首屏
     const preferred = convs.find((c) => (c.requests || 0) > 0) || convs[0];

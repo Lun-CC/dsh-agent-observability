@@ -65,9 +65,16 @@ export function decodeZstdLog(buf) {
 export function loadSession(target) {
   let file = target;
   if (statSync(target).isDirectory()) {
-    const hit = readdirSync(target).find((n) => n.endsWith('.jsonl.zstd'));
-    if (!hit) throw new Error(`目录内没有 .jsonl.zstd：${target}`);
-    file = join(target, hit);
+    // 目录里可能不止一个日志（历史轮转/被拷进来的旧日志）。取最近修改的那个，
+    // 而不是 readdir 的第一个 —— 保证同一输入在不同机器/不同文件系统顺序下结果一致。
+    const hits = readdirSync(target).filter((n) => n.endsWith('.jsonl.zstd'));
+    if (!hits.length) throw new Error(`目录内没有 .jsonl.zstd：${target}`);
+    hits.sort((a, b) => {
+      const ma = statSync(join(target, a)).mtimeMs;
+      const mb = statSync(join(target, b)).mtimeMs;
+      return mb - ma || a.localeCompare(b);
+    });
+    file = join(target, hits[0]);
   }
 
   const buf = readFileSync(file);
@@ -95,17 +102,30 @@ export function loadSession(target) {
   };
 }
 
-/** 列出 sessions 根目录下全部 session 目录。 */
-export function listSessionDirs(root) {
+/**
+ * 列出一个目录下所有「会话目录」（直接含 .jsonl.zstd 的目录），最多递归 3 层。
+ *
+ * 不假设 sessions/<cwd 分组>/session-<id>/ 的固定两级结构：不同版本、被改名/搬移的
+ * 会话目录、直接把 group 目录或 sessions 根目录传进来都能找到；结果排序，跨机器一致。
+ */
+export function listSessionDirs(root, maxDepth = 3) {
   const out = [];
-  for (const group of readdirSync(root)) {
-    const gp = join(root, group);
-    if (!statSync(gp).isDirectory()) continue;
-    for (const name of readdirSync(gp)) {
-      const sp = join(gp, name);
-      if (statSync(sp).isDirectory() && name.startsWith('session-')) out.push(sp);
+  const walk = (dir, depth) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // 无权限/坏链接的目录跳过，不让一次扫描整体失败
     }
-  }
+    if (entries.some((e) => e.isFile() && e.name.endsWith('.jsonl.zstd'))) {
+      out.push(dir);
+      return; // 已是一个会话目录，不再往下钻
+    }
+    if (depth >= maxDepth) return;
+    for (const e of entries) if (e.isDirectory()) walk(join(dir, e.name), depth + 1);
+  };
+  walk(root, 0);
+  out.sort();
   return out;
 }
 

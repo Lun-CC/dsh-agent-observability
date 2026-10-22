@@ -1,8 +1,8 @@
 # 发布手册（RELEASE）
 
-面向维护者的 1.0.0 发布流程。所有命令在仓库根 `E:\workbuddybuild\build\dsh-agent-observability`
-下执行（Windows + pwsh；bash 写法在括号里给出）。发布对象只有
-`packages/dsh-audit-plugin/` 一个包，根包是 `private: true`。
+面向维护者的 1.0.0 发布流程。所有命令在**仓库根**（clone 后的目录，下文记作 `<repo>`；
+Windows 路径类似 `C:\path\to\dsh-agent-observability`）下执行（Windows + pwsh；bash 写法
+在括号里给出）。发布对象只有 `packages/dsh-audit-plugin/` 一个包，根包是 `private: true`。
 
 **发布原则**：先验证后发布，先小范围后公开；出问题优先「发补丁 + deprecate」，不删版本。
 
@@ -140,8 +140,9 @@ Get-ChildItem "$tmp\package" -Recurse -File | Measure-Object -Property Length -S
 
 ```pwsh
 $env:DSH_HOME = Join-Path $env:TEMP "dsh-audit-release-test"
-node "D:\tools\dph\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js" `
-  plugin --profile releasecheck add "file:$PWD\dsh-audit-plugin-1.0.0.tgz"
+# 用本机安装的 dsh 命令（桌面版若不在 PATH，可指向其 bin：<你安装目录>\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js，
+# 该虚拟路径只能由桌面版自带的 Node/Electron 加载，普通 node 跑不了，见 docs/evidence/2026-10-22-*）
+dsh plugin --profile releasecheck add "file:$PWD\dsh-audit-plugin-1.0.0.tgz"
 ```
 
 验证：profile 的 `dependencies` 与 `dsh.profile.bundles` 出现 `dsh-audit-plugin`、

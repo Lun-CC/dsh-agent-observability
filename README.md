@@ -68,12 +68,15 @@ dsh plugin --profile web add dsh-audit-plugin
 
 ```bash
 # 装过插件：CLI 在 profile 的 node_modules/.bin/ 下（pnpm 链入），可直接调用
-"$DSH_HOME/profiles/web/node_modules/.bin/dsh-audit" <会话目录>
+"${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/.bin/dsh-audit" <会话目录>
 # 把该目录加进 PATH 后，可直接：dsh-audit <会话目录>
 
 # 不安装、只想跑一次（发布后）
 npx --yes --package=dsh-audit-plugin dsh-audit <会话目录>
 ```
+
+> `$DSH_HOME` 未设置时默认是 `~/.dsh`（Windows `%USERPROFILE%\.dsh`）；bash 里写
+> `${DSH_HOME:-$HOME/.dsh}` 才和默认安装一致，别把裸 `$DSH_HOME` 直接用在 `rm -rf` 里。
 
 > Windows PowerShell 里环境变量写作 `$env:DSH_HOME`，路径写法如
 > `"$env:DSH_HOME\profiles\web\node_modules\.bin\dsh-audit" <会话目录>`。
@@ -105,7 +108,7 @@ Web 页面读 `.json`；跑一次 `node scripts/backfill-summaries.mjs` 回填�
 
 ```bash
 dsh plugin --profile web remove dsh-audit-plugin
-rm -rf "$DSH_HOME/dsh-audit"     # Windows: Remove-Item -Recurse %USERPROFILE%\.dsh\dsh-audit
+rm -rf "${DSH_HOME:-$HOME/.dsh}/dsh-audit"     # Windows: Remove-Item -Recurse "$env:USERPROFILE\.dsh\dsh-audit"
 ```
 
 `remove` 会清掉 profile 里的依赖与 bundle 声明；报告目录不会自动删，需要手动清。
@@ -153,7 +156,7 @@ $DSH_HOME/dsh-audit/debug-snapshot.json     仅 debugShape: true 时出现，排
 ```bash
 # 三种跑法（任选其一）
 dsh-audit ~/.dsh/sessions                                     # 已把 profile 的 .bin 加进 PATH
-"$DSH_HOME/profiles/web/node_modules/.bin/dsh-audit" ~/.dsh/sessions   # 直接给路径
+"${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/.bin/dsh-audit" ~/.dsh/sessions   # 直接给路径
 npx --yes --package=dsh-audit-plugin dsh-audit ~/.dsh/sessions         # 不安装（发布后）
 node bin/dsh-audit.mjs ~/.dsh/sessions                                 # 仓库内开发
 
@@ -161,7 +164,7 @@ dsh-audit --help                                               # 用法 / 选项
 dsh-audit --version                                            # 1.0.0
 
 # 单个会话
-dsh-audit ~/.dsh/sessions/--E-aibuild--/session-xxxx
+dsh-audit ~/.dsh/sessions/<分组目录>/session-xxxx        # 分析一个会话目录
 
 # 直接给 .zstd 文件
 dsh-audit ~/.dsh/sessions/.../session.v4.jsonl.zstd
@@ -179,6 +182,12 @@ dsh-audit ~/.dsh/sessions --tool-limit=5
 参数：`<session 目录 | 单个文件>`、`--json`、`--tool-limit=<N>` / `--tool-limit N`
 （文本报告工具表最多列 N 条，默认 10）、`-h/--help`、`-V/--version`；未知选项报错。
 退出码：`0` 至少一个会话成功，`1` 全部失败，`2` 参数错误（缺目标 / 路径不存在 / 选项值非法）。
+
+目标路径可以给 **sessions 根目录、某个分组目录、单个会话目录或单个 `.jsonl.zstd` 文件**：
+CLI 向下最多递归 3 层找 `*.jsonl.zstd`，不假设 `sessions/<cwd 分组>/session-<id>/` 的固定
+两级结构（拷进来的旧日志、被改名/搬移的会话目录也能扫到）；同一目录有多个日志时取 mtime
+最新的那个。路径含中文/空格用引号包住即可；Windows 下把 `~/.dsh` 换成
+`$env:USERPROFILE\.dsh`（例如 `dsh-audit "$env:USERPROFILE\.dsh\sessions"`）。
 
 样本输出：`docs/evidence/2026-10-21-真实会话审计报告.txt`。
 宿主内样本：`docs/evidence/2026-10-21-宿主内插件报告样本.txt`。
@@ -229,6 +238,12 @@ Web 报告页只监听宿主回环端口；页面与查询路由都是只读 GET
    `cordis.patch.yml` 里（`--dump-config` 可验证）。
 10. **`tokenMeter` 缺失时**：插件不会死锁，报告照常产出，但「平台定价」区块标注不可用，
     数字退回 usage + 字符估算口径。
+11. **多个 profile 都装了插件时**，自动整改不会替你猜：页面顶部会要求先选择目标 profile
+    （命令行等价 `node scripts/apply-fix.mjs ... --profile <name>`），选完才写入。按 mtime
+    猜可能写到你没在看的那个环境，所以这条从 1.0.0 起改为显式选择；只装了一个 profile
+    时自动使用它，不做兜底猜测。
+12. **会话目录是符号链接时不跟随**：扫描用 `withFileTypes` 目录项，符号链接会被当成普通文件跳过
+    （防止链接成环无限递归）。需要审计软链目录时，先把真实目录路径直接传给 CLI。
 
 ---
 
@@ -242,6 +257,7 @@ Web 报告页只监听宿主回环端口；页面与查询路由都是只读 GET
 | 可选服务 | `tokenMeter`（开发者预览） | `ctx.get('tokenMeter')` 读取，缺了降级 |
 | 包形态 | bundle（`dsh.bundle.patch` + `manifestVersion: 1`） | 非 bundle 在插件页不可见 |
 | 平台 | Windows / macOS / Linux | 本机以 Windows + Web/桌面壳为主实测 |
+| 默认数据目录 | `$DSH_HOME`，未设置时 `~/.dsh`（Windows `%USERPROFILE%\.dsh`） | 代码 `process.env.DSH_HOME \|\| join(homedir(), '.dsh')` |
 
 `engines.dsh` 只校验**声明过的**兼容区间：宿主 API 有破坏性变更时会被门控提前拦下，
 代价是新的宿主版本可能需要显式放宽区间。

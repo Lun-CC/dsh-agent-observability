@@ -36,7 +36,8 @@ in the plugin page). Local dev: `file:<absolute-path>`, not `link:`.
 
 The package ships `bin/dsh-audit.mjs`, so install also gives you the offline `dsh-audit`
 CLI (entry: profile `node_modules/.bin/dsh-audit`; see [Usage](#usage-cli)). On Windows
-PowerShell the env var is `$env:DSH_HOME`.
+PowerShell the env var is `$env:DSH_HOME`; when unset, `$DSH_HOME` defaults to `~/.dsh`
+(`%USERPROFILE%\.dsh` on Windows) — in bash write `${DSH_HOME:-$HOME/.dsh}`.
 
 Upgrade: `dsh plugin --profile web add dsh-audit-plugin@latest`. Reports older than 0.8.0
 are `.txt` only; backfill `.json` for the Web UI with `node scripts/backfill-summaries.mjs`.
@@ -66,7 +67,7 @@ profile entry (`node_modules/.bin/dsh-audit`) or the `npx --yes --package=dsh-au
 prefix; repo checkout: `node bin/dsh-audit.mjs`.
 
 ```bash
-dsh-audit ~/.dsh/sessions/--E-aibuild--/session-xxxx   # one session directory
+dsh-audit ~/.dsh/sessions/<group>/session-xxxx   # one session directory
 dsh-audit ~/.dsh/sessions                              # all sessions (overview)
 dsh-audit ~/.dsh/sessions --json                       # machine-readable
 dsh-audit ~/.dsh/sessions --tool-limit=5               # top N tools in the report
@@ -77,6 +78,12 @@ dsh-audit --version                                    # 1.0.0
 Flags: `<session dir | .jsonl.zstd file>`, `--json`, `--tool-limit=<N>` / `--tool-limit N`
 (top N tools, default 10), `-h/--help`, `-V/--version`; unknown options error. Exit codes:
 `0` ≥1 session ok, `1` all failed, `2` bad args (missing target / path not found / bad value).
+
+The target may be the sessions root, a group dir, a session dir, or a single `.jsonl.zstd`
+file: the CLI recurses up to 3 levels looking for `*.jsonl.zstd`, so the fixed
+`sessions/<group>/session-<id>/` layout is not assumed (copied-in old logs and renamed dirs
+are found too); with several logs in one dir the newest mtime wins. Quote paths containing
+spaces/CJK; on Windows `~/.dsh` is `$env:USERPROFILE\.dsh`.
 
 ## Fixes
 
@@ -140,7 +147,7 @@ then delete. `errors.log` may contain stack traces with file paths. No network; 
 
 ```bash
 dsh plugin --profile web remove dsh-audit-plugin
-rm -rf "$DSH_HOME/dsh-audit"   # data dir is not removed automatically
+rm -rf "${DSH_HOME:-$HOME/.dsh}/dsh-audit"   # data dir is not removed automatically
 ```
 
 ## License

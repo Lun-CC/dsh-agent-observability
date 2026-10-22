@@ -38,11 +38,27 @@
   - 现在保存 disposer、经 `ctx.effect` 注册反注册、apply 返回 `disposeUi`；
     `wired` 幂等；处理"inject 回调晚于 dispose 到达"；`disposeUi` 可重复调用
 - 原子写失败时清理 `.tmp-<pid>` 临时文件，避免被 `listSummaries`/`prune` 误扫
+- **CLI 扫描会话目录不再假设固定两级布局**：向下递归 3 层找 `*.jsonl.zstd`，
+  分组目录/拷进来的旧日志/改名目录都能扫到；同一目录多个日志取 mtime 最新的；
+  无权限子目录跳过而不是整体失败（新增 3 条回归测试；路径含中文/空格已有测试覆盖）
 - 打磨：`engines.node` 在仓库根与插件包对齐为 `^22.19.0 || >=24`；CI 改为 22.19 / 24 矩阵，
   补跑全部 7 个测试文件、派生文件一致性、tarball 必含 `bin/` 与 `README.en.md` 断言
+- CI 的 tarball 清单断言在 Linux 失败：`npm pack --json` 的 stdout 被 prepack 的进度行污染，
+  `JSON.parse` 直接抛错。改为 `--ignore-scripts` + Node 内 `execFileSync` 解析，
+  并补断言 tarball 不夹带 `test/` `docs/` `src/` `node_modules/`
 - npm 发布面：`bin` 写 `"bin/dsh-audit.mjs"`（**不带 `./` 前缀**）——`npm publish` 会把
   `./` 前缀的 bin 判为无效并静默移除，而 `npm pack` / 本地安装都不报错；`verify-pack.mjs`
   与 `test/cli-pack.test.mjs` 已加断言，`npm publish --dry-run` 复验无警告
+- **多 profile 时自动整改不再按 mtime 猜目标**（`lib/fixes.mjs`）：旧实现挑「最近修改过的
+  profile」，同一台机器 web + 桌面都装插件时会静默写进另一个环境。现在只在唯一候选时自动
+  使用；多个候选时 `/api/list` 返回 profile 列表、页面要求先选择，后端收到无 `profile` 的
+  写请求直接拒绝并列出候选（不会写任何文件）
+- **写用户配置前做编码识别与回读校验**：`cordis.patch.yml` / `AGENTS.md` 不是合法 UTF-8
+  （GBK/UTF-16/BOM）时拒绝自动写入，并给出手动追加片段；写入先备份 `.bak-<时间戳>`，
+  写后回读校验失败自动还原，避免「读坏再写回」毁文件
+- **静默失败可见化**：`session/flush` 载荷形状变化（拿不到 `header.id`）或审计抛错时不再
+  静默 return —— 写 `errors.log`（同类消息 10 分钟内不重复刷屏）并通过 `/api/list` 的
+  `lastError` 显示在页面顶部，用户不必去翻日志猜「为什么没报告」
 
 ### 优化
 
@@ -51,7 +67,9 @@
 - 真实最大会话（1,206,913 B zstd / 854 帧 / 1,428 事件）实测：解码 36.9 ms、
   analyze 8.1 ms、宿主内 analyze+prescribe+render 7.4 ms，全流程 74–124 ms —— 不需要优化
 
-测试 61 → **78**（1.0.0 新增 6 条打包结构测试 + 7 条路由生命周期回归测试 + 4 条 CLI 帮助/版本/参数测试）。
+测试 61 → **87**（1.0.0 新增 6 条打包结构测试 + 7 条路由生命周期回归测试 + 4 条 CLI 帮助/版本/参数测试
++ 3 条会话目录扫描回归测试 + 6 条跨机器普适性回归：多 profile 拒绝/显式选择、GBK 配置拒绝、
+AGENTS.md 编码拒绝、lastError 可见性、多 profile API 拒绝与只写选中）。
 
 ### 升级注意
 

@@ -6,6 +6,7 @@
  *   node scripts/apply-fix.mjs --id=spill --dry-run
  *   node scripts/apply-fix.mjs --id=spill
  *   node scripts/apply-fix.mjs --id=spill --revert
+ *   node scripts/apply-fix.mjs --id=spill --profile=web   # 多 profile 时必须显式指定
  *
  * 与插件内一键整改用的是同一份 lib/fixes.mjs，行为一致。
  */
@@ -25,11 +26,18 @@ const flag = (name) => argv.includes(`--${name}`);
 
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh');
 const cwd = arg('cwd') || process.cwd();
-const profileDir = resolveProfileDir(dshHome);
+const profileName = arg('profile');
+const pick = resolveProfileDir(dshHome, profileName);
 
 if (flag('list') || !arg('id')) {
-  console.log(`已装在本插件的 profile：${profileDir ?? '（没找到）'}`);
-  const applied = appliedFixes(profileDir);
+  if (pick.profiles.length > 1) {
+    console.log(`装了本插件的 profile 有 ${pick.profiles.length} 个：`);
+    for (const p of pick.profiles) console.log(`  - ${p.name}  (${p.dir})`);
+    console.log('多 profile 时必须用 --profile=<name> 指定要改哪个，不会按 mtime 猜。');
+  } else {
+    console.log(`已装在本插件的 profile：${pick.dir ?? '（没找到）'}`);
+  }
+  const applied = appliedFixes(pick.dir);
   console.log('可执行的整改：');
   for (const [id, rule] of Object.entries(FIX_RULES)) {
     console.log(`  ${applied[id] ? '[已应用]' : '[      ]'} ${id.padEnd(16)} ${rule.kind === 'patch' ? '改配置' : '写 AGENTS.md'} · ${rule.title}`);
@@ -45,16 +53,19 @@ if (!FIX_RULES[id]) {
 }
 
 if (flag('dry-run')) {
-  const pv = previewFix(id, { cwd, profileDir });
+  const pv = previewFix(id, { cwd, profileDir: pick.dir, profiles: pick.profiles });
   console.log(`目标：${pv.target}\n`);
   console.log(pv.text);
   console.log(`\n（dry-run，未写入）`);
   process.exit(0);
 }
 
-const result = flag('revert') ? revertFix(id, { dshHome, cwd }) : applyFix(id, { dshHome, cwd });
+const result = flag('revert')
+  ? revertFix(id, { dshHome, cwd, profile: profileName })
+  : applyFix(id, { dshHome, cwd, profile: profileName });
 console.log(result.message);
 if (!result.changed) process.exit(1);
+const profileDir = result.file?.endsWith('cordis.patch.yml') ? result.file.replace(/[\\/]cordis\.patch\.yml$/, '') : pick.dir;
 
 // 改配置时顺手验证一下组装后的配置真的变了（有 dsh 可执行文件才有意义）
 if (result.file?.endsWith('cordis.patch.yml') && profileDir) {

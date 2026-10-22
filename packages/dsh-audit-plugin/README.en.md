@@ -48,7 +48,7 @@ prefix commands with `npx --yes --package=dsh-audit-plugin --`). No DSH, API key
 needed:
 
 ```bash
-dsh-audit ~/.dsh/sessions/--E-aibuild--/session-xxxx   # one session
+dsh-audit ~/.dsh/sessions/<group>/session-xxxx   # one session
 dsh-audit ~/.dsh/sessions --tool-limit=5               # top N tools in the report
 dsh-audit ~/.dsh/sessions --json                       # machine-readable
 dsh-audit --help                                       # usage / options / exit codes
@@ -60,6 +60,9 @@ Flags: `<session dir | .jsonl.zstd file>`, `--json`, `--tool-limit=<N>` / `--too
 `0` ≥1 success, `1` all failed, `2` bad args (missing target / path not found / bad value).
 Without installing: `npx --yes --package=dsh-audit-plugin dsh-audit <dir>`. The CLI has no
 platform pricing section — that needs the in-host `tokenMeter`.
+The target may be the sessions root, a group dir, a session dir, or a single `.jsonl.zstd`
+file: it recurses up to 3 levels looking for `*.jsonl.zstd` (no fixed two-level layout
+assumed; newest mtime wins when several logs share a dir). Quote paths with spaces/CJK.
 
 ### Uninstall
 
@@ -78,8 +81,11 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\dsh-audit"   # data dir is ke
   (no external assets), light/dark aware
 - Each prescription has "Apply this fix" with preview, backup and revert
 
-Routes: `GET /dsh-cost-audit/` (page), `GET /api/list`, `GET /api/report?id=`,
-`POST /api/fix` (`preview` / `apply` / `revert`), all on the host's `ctx.webServer`.
+Routes: `GET /dsh-cost-audit/` (page), `GET /api/list` (reports + latest +
+`profile` candidates and `lastError`), `GET /api/report?id=`, `POST /api/fix`
+(`preview` / `apply` / `revert`; pass `profile` when several profiles are
+installed, otherwise it refuses with the candidate list), all on the host's
+`ctx.webServer`.
 
 ## Output
 
@@ -148,6 +154,8 @@ char estimates (CJK ≈ 1 token/char).
 - No per-plugin schema attribution (`ctx.tools.register()` exposes no registrar).
 - Char-based estimates overestimate Chinese content by ~10–20%.
 - Every flush re-analyzes the whole session (sync CPU); no `Config`, no settings panel.
+- With the plugin installed in several profiles, "apply" writes to the most recently
+  modified profile; check the path shown on the page (use Preview if unsure).
 
 ## License
 

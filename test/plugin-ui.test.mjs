@@ -174,6 +174,23 @@ test('api/list 返回报告列表与 latest', async () => {
   assert.equal(data.reports[0].id, 'session-ui');
 });
 
+test('api/list 暴露 profile 与 lastError（静默失败在页面可见）', async () => {
+  const ctx = await bootWithReport();
+  const first = JSON.parse((await call(ctx._routes.get('/dsh-cost-audit/api/list'))).body);
+  assert.ok(first.profile && Array.isArray(first.profile.profiles), '返回 profile 候选');
+  assert.equal(first.lastError, null);
+
+  // 模拟宿主事件形状变化（宿主升级后 flush 载荷变了）
+  ctx._h['session/flush']({ header: {} });
+  await tick(30);
+
+  const second = JSON.parse((await call(ctx._routes.get('/dsh-cost-audit/api/list'))).body);
+  assert.ok(second.lastError, '形状变化必须留下 lastError，否则页面只显示空');
+  assert.equal(second.lastError.phase, 'trigger');
+  assert.match(second.lastError.message, /header\.id/);
+  assert.match(readFileSync(join(home, 'dsh-audit', 'errors.log'), 'utf8'), /header\.id/);
+});
+
 test('摘要带结构化建议（标签 + 动作 + 可省区间）', async () => {
   await bootWithReport();
   const s = JSON.parse(readFileSync(join(home, 'dsh-audit', 'report-session-ui.json'), 'utf8'));

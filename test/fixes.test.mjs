@@ -40,7 +40,77 @@ function makeHome() {
 
 test('能定位到装着本插件的 profile', () => {
   const { home, profile } = makeHome();
-  assert.equal(resolveProfileDir(home), profile);
+  assert.equal(resolveProfileDir(home).dir, profile);
+});
+
+test('多 profile：不按 mtime 猜，报歧义并列出候选', () => {
+  const { home, profile } = makeHome();
+  const other = join(home, 'profiles', 'desktop');
+  mkdirSync(other, { recursive: true });
+  writeFileSync(
+    join(other, 'package.json'),
+    JSON.stringify({ dependencies: { 'dsh-audit-plugin': 'file:x' }, dsh: { profile: { bundles: ['dsh-audit-plugin'] } } }, null, 2),
+  );
+  // 把另一个 profile 的 mtime 改得更新：旧实现会选它，新实现必须拒绝
+  writeFileSync(join(other, 'cordis.patch.yml'), '# desktop 自己\n');
+
+  const pick = resolveProfileDir(home);
+  assert.equal(pick.dir, null);
+  assert.equal(pick.ambiguous, true);
+  assert.deepEqual(pick.profiles.map((p) => p.name), ['desktop', 'web']);
+
+  const r = applyFix('spill', { dshHome: home });
+  assert.equal(r.changed, false);
+  assert.equal(r.ambiguous, true);
+  assert.match(r.message, /desktop/);
+  assert.match(r.message, /web/);
+  // 两个文件都必须原封不动
+  assert.equal(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8'), ORIGINAL_PATCH);
+  assert.equal(readFileSync(join(other, 'cordis.patch.yml'), 'utf8'), '# desktop 自己\n');
+});
+
+test('多 profile：显式选一个才写，且只写选中的那个', () => {
+  const { home, profile } = makeHome();
+  const other = join(home, 'profiles', 'desktop');
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(other, 'package.json'), JSON.stringify({ dependencies: { 'dsh-audit-plugin': 'file:x' } }, null, 2));
+  writeFileSync(join(other, 'cordis.patch.yml'), '# desktop 自己\n');
+
+  const wrong = applyFix('spill', { dshHome: home, profile: 'nope' });
+  assert.equal(wrong.changed, false);
+  assert.match(wrong.message, /没有装本插件/);
+
+  const r = applyFix('spill', { dshHome: home, profile: 'web' });
+  assert.equal(r.changed, true);
+  assert.equal(r.file, join(profile, 'cordis.patch.yml'));
+  assert.match(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8'), /spill-policy/);
+  assert.equal(readFileSync(join(other, 'cordis.patch.yml'), 'utf8'), '# desktop 自己\n');
+});
+
+test('目标 patch 不是 UTF-8（GBK/UTF-16/BOM）时拒绝写入且不改文件', () => {
+  const { home, profile } = makeHome();
+  const file = join(profile, 'cordis.patch.yml');
+  const gbk = Buffer.from([0x23, 0x20, 0xd6, 0xd0, 0xce, 0xc4, 0x0a]); // "# 中文" 的 GBK 字节
+  writeFileSync(file, gbk);
+
+  const r = applyFix('spill', { dshHome: home });
+  assert.equal(r.changed, false);
+  assert.match(r.message, /不是合法 UTF-8/);
+  assert.deepEqual(readFileSync(file), gbk, '编码不认识时必须原样保留');
+  assert.equal(readdirSync(profile).filter((f) => f.includes('.bak-')).length, 0, '拒绝时不该留备份');
+});
+
+test('AGENTS.md 不是 UTF-8 时拒绝自动写，并给出可手动粘贴的片段', () => {
+  const { home, project } = makeHome();
+  const file = join(project, 'AGENTS.md');
+  const gbk = Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x0a]);
+  writeFileSync(file, gbk);
+
+  const r = applyFix('heavy-ingest', { dshHome: home, cwd: project });
+  assert.equal(r.changed, false);
+  assert.match(r.message, /可手动在文件末尾追加/);
+  assert.match(r.message, /读代码前先用 glob/);
+  assert.deepEqual(readFileSync(file), gbk);
 });
 
 test('应用配置类整改：只追加带标记的块', () => {
@@ -228,6 +298,34 @@ test('API：带正确头时可以预览（不落盘）', async () => {
   const data = JSON.parse(r.body);
   assert.equal(data.ok, true);
   assert.match(data.preview.text, /spill-policy/);
+});
+
+test('API：多 profile 时无 profile 拒绝写入并列出候选；显式 profile 只写选中', async () => {
+  const { ctx, routes } = fakeCtxWithRoutes();
+  apply(ctx, { ui: true });
+  const a = join(home, 'profiles', 'web');
+  const b = join(home, 'profiles', 'desktop');
+  const pkg = JSON.stringify({ dependencies: { 'dsh-audit-plugin': 'file:x' }, dsh: { profile: { bundles: ['dsh-audit-plugin'] } } });
+  for (const [dir, text] of [[a, '# web\n'], [b, '# desktop\n']]) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), pkg);
+    writeFileSync(join(dir, 'cordis.patch.yml'), text);
+  }
+  const route = routes.get('/dsh-cost-audit/api/fix');
+
+  const r1 = await callRoute(route, fakeReq({ method: 'POST', headers: { 'x-dsh-audit': '1' }, body: { id: 'spill', action: 'apply' } }));
+  const d1 = JSON.parse(r1.body);
+  assert.equal(d1.changed, false);
+  assert.equal(d1.ambiguous, true);
+  assert.match(d1.message, /web/);
+  assert.match(d1.message, /desktop/);
+  assert.equal(readFileSync(join(a, 'cordis.patch.yml'), 'utf8'), '# web\n', '拒绝时不能动任何文件');
+
+  const r2 = await callRoute(route, fakeReq({ method: 'POST', headers: { 'x-dsh-audit': '1' }, body: { id: 'spill', action: 'apply', profile: 'desktop' } }));
+  const d2 = JSON.parse(r2.body);
+  assert.equal(d2.changed, true);
+  assert.match(readFileSync(join(b, 'cordis.patch.yml'), 'utf8'), /spill-policy/);
+  assert.equal(readFileSync(join(a, 'cordis.patch.yml'), 'utf8'), '# web\n', '只写选中的 profile');
 });
 
 void inject;
