@@ -29,7 +29,7 @@
  *   - 「无产出步」只统计工具全失败，不含"工具成功但结果无用"的情形
  */
 
-import { messageText, estimateTokens } from './session.mjs';
+import { messageText, estimateTokens, estimateTokensOfficial, SPILL_EXEMPT_TOOLS } from './session.mjs';
 
 /**
  * 从工具结果里识别失败信号。
@@ -144,6 +144,10 @@ export function analyze(loaded) {
       step,
       hasResult: Boolean(r),
       resultTokens: tokens,
+      // 平台判定 spill 用的口径（4 字符/token），与我们自己的估算是两个数
+      resultTokensOfficial: estimateTokensOfficial(text),
+      // read 的结果被 spill-policy 显式豁免，调阈值对它完全无效
+      spillExempt: SPILL_EXEMPT_TOOLS.has(name),
       resultBytes: Buffer.byteLength(text, 'utf8'),
       failure: r ? failureSignal(r) : null,
       carrySteps: r ? Math.max(0, lastStep - step) : 0,

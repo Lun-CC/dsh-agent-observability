@@ -30,7 +30,7 @@ export const FIX_RULES = {
     title: '调低 spill 阈值',
     entry: 'spill-policy',
     config: { maxInlineTokens: 3000 },
-    note: '超过 3000 token 的工具结果落盘，只回 locator 与预览',
+    note: '超过 3000 token 的工具结果落盘，只回 locator 与预览。注意：read 的结果被豁免，此项对 read 无效',
     requiresRestart: true,
   },
   'context-growth': {
@@ -250,7 +250,8 @@ export function revertFix(id, { dshHome, cwd } = {}) {
 export function decorateFixes(prescriptions, { profileDir, cwd } = {}) {
   const applied = appliedFixes(profileDir);
   return (prescriptions ?? []).map((p) => {
-    const rule = FIX_RULES[p.id];
+    // 处方自己声明了不可自动改（例如"平台根本不生效"这类），就别给按钮
+    const rule = p.fixable === false ? null : FIX_RULES[p.id];
     return {
       ...p,
       fix: rule

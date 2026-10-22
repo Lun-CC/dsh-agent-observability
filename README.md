@@ -73,6 +73,10 @@ $DSH_HOME/dsh-audit/errors.log              仅出错时出现，宿主内绝不
 或项目 `AGENTS.md`（读取约定、环境事实），带预览、备份与一键撤销。
 命令行等价：`node scripts/apply-fix.mjs --list`。
 
+已知边界（写在这里免得被当成 bug）：`spill-policy` 源码里写死了 `exec.name === 'read'`
+直接放行，**read 的结果永远不会落盘**，调 `maxInlineTokens` 对它零收益。
+所以插件只对非 read 工具（pwsh / web_fetch 等）开 spill 处方，read 的大结果改开「分段读」处方。
+
 安装只有一条命令（bundle 形态，`dsh plugin` 会同时写依赖和 `dsh.profile.bundles`）：
 
 ```bash

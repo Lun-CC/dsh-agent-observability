@@ -10,6 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyze, failureSignal } from '../src/lib/analyze.mjs';
+import { prescribe } from '../src/lib/prescribe.mjs';
 
 const usage = (input, cacheRead, output, cacheWrite = 0) => ({
   inputTokens: input,
@@ -113,4 +114,56 @@ test('正文中间出现 [exit code: 1] 的文件，不得判为失败（真实�
 test('末尾带非零退出码仍然判失败', () => {
   const ev = { data: { message: { isError: false, content: [{ type: 'text', text: `long output...\n[exit code: 1]  ` }] } } };
   assert.equal(failureSignal(ev), 'exit 1');
+});
+
+// ── spill 豁免（2026-10-22 真机踩坑）──────────────────────────────────────
+// spill-policy/lib/types/index.js 里写死了 `exec.name === 'read'` 直接放行。
+// 之前我们把 read 的大结果也算进 spill 处方，用户照做后一条都没落盘 —— 处方是假的。
+
+function sessionWithTool(toolName, chars) {
+  const events = [
+    { type: 'session', data: { id: 's1' } },
+    { type: 'tool/call', seq: 1, time: 1, data: { callId: 'c1', name: toolName, arguments: '', step: 1, turn: 1 } },
+    { type: 'tool/result', seq: 2, time: 2, data: { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'x'.repeat(chars) }] } } },
+  ];
+  for (let i = 0; i < 4; i++) events.push(stepEvent(10 + i, 2 + i, usage(5000, 40000, 100)));
+  return loaded(events);
+}
+
+test('read 的大结果被标记为 spill 豁免', () => {
+  const m = analyze(sessionWithTool('read', 40000));
+  assert.equal(m.calls[0].spillExempt, true);
+  assert.ok(m.calls[0].resultTokens >= 2000);
+});
+
+test('非 read 工具的大结果不豁免', () => {
+  const m = analyze(sessionWithTool('pwsh', 40000));
+  assert.equal(m.calls[0].spillExempt, false);
+});
+
+test('read 主导时不开 spill 处方（开了也没用）', () => {
+  const v = prescribe(analyze(sessionWithTool('read', 40000)));
+  const ids = v.conclusions.map((c) => c.id);
+  assert.ok(!ids.includes('spill'), 'read 的结果 spill 管不了，不该出这张卡');
+  assert.ok(ids.includes('heavy-ingest'), '应改为「分段读」处方');
+  const card = v.conclusions.find((c) => c.id === 'heavy-ingest');
+  assert.match(card.finding, /spill/);
+});
+
+test('非 read 的超长结果仍然开 spill 处方', () => {
+  const m = analyze(sessionWithTool('pwsh', 40000));
+  // 让工具结果的滞留成本占到体量 5% 以上，spill 规则才不再弃权
+  const v = prescribe(m);
+  const ids = v.conclusions.map((c) => c.id);
+  const spillNote = v.notes.find((n) => n.rule === 'spill');
+  assert.ok(
+    ids.includes('spill') || (spillNote && /占体量/.test(spillNote.reason)),
+    '要么出 spill 处方，要么明确写清弃权原因',
+  );
+});
+
+test('同一 id 的处方不会重复出两张卡', () => {
+  const v = prescribe(analyze(sessionWithTool('read', 40000)));
+  const ids = v.conclusions.map((c) => c.id);
+  assert.equal(new Set(ids).size, ids.length);
 });

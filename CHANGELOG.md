@@ -7,6 +7,56 @@
 
 ---
 
+## [0.11.0] - 2026-10-22
+
+**修掉一条假处方。** 真机验证时发现：应用了 `maxInlineTokens: 3000` 之后，
+一条工具结果都没落盘。读 `spill-policy` 源码才发现它对 `read` 是写死豁免的 ——
+`if (exec.name === 'read') return decision`。而这次验证会话的大结果 100% 来自 `read`，
+所以那条"开 spill 能省 X token"的建议在真实环境里收益为 0。
+
+这是本插件最该避免的错误类型：**给了一条看起来有理、实际不生效的建议。**
+
+### 修复
+
+- spill 规则按工具分流（`src/lib/prescribe.mjs`）
+  - `read` 的超长结果不再进 spill 处方，改出「先定位再分段读」的处方，
+    并在卡片里写明"spill-policy 豁免 read，调阈值零收益"
+  - 非 `read` 工具（pwsh / web_fetch …）的超长结果照常开 spill 处方
+  - 两条规则可能同时命中同一 id，新增 `dedupe()` 合并证据与省量区间，不重复出卡
+- 新增平台口径估算 `estimateTokensOfficial()`（`ceil(len/4)+4`，与
+  `dsh-token-meter` / spill 判定一致）。我们原本的 CJK 估算（1 字 1 token）
+  与平台判定用的不是一个口径，会算出"平台其实不会落盘"的假 offender
+- `SPILL_EXEMPT_TOOLS` 常量带源码出处注释，避免以后凭印象改回去
+- `fixes.mjs`：spill 整改的说明补上"对 read 无效"；`decorateFixes` 尊重处方自带的
+  `fixable: false`，不给明知无效的按钮
+- `npm test` 漏跑 `plugin-ui` / `fixes` / `cli` 三个文件（56 条里只跑了 28 条），已补全
+
+### 实测（本机 11 个真实会话 / 343 条工具结果）
+
+用平台自己的 `spill-policy` 代码（从 `app.asar` 原样取出）离线回放：
+
+```
+工具        原始tok   12500后   3000后   落盘?
+pwsh          12487     12487     2987    是
+pwsh           5319      5319     2987    是
+web_fetch      5264      5264     2987    是
+read           4393      4393     4393    否 — read 被豁免
+read           4092      4092     4092    否 — read 被豁免
+```
+
+- 阈值 12500：**0 条**落盘（最大那条 12,487，差 13 token）
+- 阈值 3000：3 条非 read 结果落盘，`read` 的两条原样不动
+- 全量口径下，非 read 结果可省约 **1,226,685 token**；read 的 111,000 token 省不到，
+  只能靠分段读
+
+`dsh-base` bundle 里同时装了 `spill-policy` 与 `spill-local`，`ctx.spillStore` 有后端，
+所以非 read 工具这条路径是真的能落盘的，不是配置摆设。
+
+测试 56 → 61（新增 5 条：read 豁免标记、非 read 不豁免、read 主导不出 spill 卡、
+非 read 仍出 spill 卡、同 id 不重复出卡）。
+
+---
+
 ## [0.10.0] - 2026-10-22
 
 整改可执行。之前报告只说"建议开 spill"，用户看完还得自己去翻配置；

@@ -124,6 +124,23 @@ export function estimateTokens(text) {
   return Math.ceil(cjk + other / 3.6);
 }
 
+/**
+ * 平台自己的估算口径：spill-policy / token-meter 用的是「4 字符 1 token + 每块 4 token 结构开销」。
+ * 判断「平台会不会真的落盘这条结果」时必须用这个口径，用上面那个会错判。
+ */
+export function estimateTokensOfficial(text) {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4) + 4;
+}
+
+/**
+ * spill-policy 显式豁免的工具（读源码确认，勿凭印象改动）。
+ * 源码：dsh-spill-policy/lib/types/index.js
+ *   if (decision.kind !== 'accept' || Object.hasOwn(decision,'value') || exec.name === 'read') return decision;
+ * 即：read 的结果永不落盘，调 maxInlineTokens 对它无效。
+ */
+export const SPILL_EXEMPT_TOOLS = new Set(['read']);
+
 /** 从 message.content 抽出纯文本。 */
 export function messageText(message) {
   if (!message?.content) return '';

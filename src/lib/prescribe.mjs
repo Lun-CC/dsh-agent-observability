@@ -70,14 +70,17 @@ export function prescribe(model) {
       reason: `工具结果的估算滞留成本只占实测上下文体量的 ${pct(share)}（${fmt(totals.carryTokensEst)} / ${fmt(totals.effInputReal)}），不是本会话的成本来源。开 spill 不会有可见收益。`,
     });
   } else {
-    const offenders = calls
-      .filter((c) => c.resultTokens >= MIN_RESULT_TOKENS && c.carrySteps >= MIN_CARRY_STEPS)
-      .sort((a, b) => b.carryTokens - a.carryTokens);
+    const big = calls.filter((c) => c.resultTokens >= MIN_RESULT_TOKENS && c.carrySteps >= MIN_CARRY_STEPS);
+    // spill-policy 源码豁免 read：调 maxInlineTokens 对 read 的结果一点用都没有。
+    // 所以先按「能不能被 spill 救」分流，只对能救的那部分开处方。
+    const offenders = big.filter((c) => !c.spillExempt).sort((a, b) => b.carryTokens - a.carryTokens);
+    const exempt = big.filter((c) => c.spillExempt).sort((a, b) => b.carryTokens - a.carryTokens);
+
     if (offenders.length) {
       const saving = offenders.reduce((a, c) => a + Math.max(0, c.resultTokens - MIN_RESULT_TOKENS) * c.carrySteps, 0);
       out.push({
         id: 'spill',
-      label: '工具结果未落盘',
+        label: '工具结果未落盘',
         severity: 'medium',
         title: `${offenders.length} 条工具结果未走 spill，在上下文里滞留到会话结束`,
         finding: `最大一条估算 ${fmt(offenders[0].resultTokens)} token，被重发 ${offenders[0].carrySteps} 次。`,
@@ -86,11 +89,35 @@ export function prescribe(model) {
           action: '开启工具结果 spill，超长结果落盘，只回 locator 与预览',
           howTo: '在 profile 的 bundle 配置里启用 spill-policy，设 maxInlineTokens（建议 2000–4000）',
           expectedSavingTokens: [Math.round(saving * 0.6), Math.round(saving * 0.9)],
-          basis: '估算：未计 agent 后续按需回读的补充开销',
+          basis: '估算：未计 agent 后续按需回读的补充开销；已排除 read（spill 对其豁免）',
         },
+        fixable: true,
         confidence: 'medium',
       });
-    } else {
+    }
+
+    // read 的大量结果：不是配置问题，是读取方式问题 —— 改用「先定位再分段读」
+    if (exempt.length) {
+      const waste = exempt.reduce((a, c) => a + c.carryTokens, 0);
+      out.push({
+        id: 'heavy-ingest',
+        label: '整份读取',
+        severity: offenders.length ? 'medium' : 'high',
+        title: `${exempt.length} 次 read 整份读入，结果滞留到会话结束（spill 管不了）`,
+        finding: `spill-policy 显式跳过 read 的结果，调 maxInlineTokens 对这部分零收益。最大一次 read 估算 ${fmt(exempt[0].resultTokens)} token，被重发 ${exempt[0].carrySteps} 次。`,
+        evidence: exempt.slice(0, 3).map((c) => `seq ${c.seq} · read · ${fmt(c.resultTokens)} tok × ${c.carrySteps} 步 = ${fmt(c.carryTokens)} tok`),
+        prescription: {
+          action: '先定位再读取：glob / grep 拿到结构后，用 offset/limit 只读相关片段',
+          howTo: '写入项目 AGENTS.md 的读取约定；spill 阈值对 read 无效，不要指望配置救这一段',
+          expectedSavingTokens: [Math.round(waste * 0.45), Math.round(waste * 0.7)],
+          basis: '估算：分段读后进入上下文的量削减 45–70%；口径为估算，非实测',
+        },
+        fixable: true,
+        confidence: 'medium',
+      });
+    }
+
+    if (!offenders.length && !exempt.length) {
       notes.push({
         rule: 'spill',
         status: 'abstained',
@@ -168,7 +195,7 @@ export function prescribe(model) {
         .map((s) => `S${s.step} · 未缓存输入 ${fmt(s.usage.inputTokens)} · 上一步工具结果 ${fmt(s.ingest.prevResultTokens)}（占 ${pct(s.ingest.share)}）`),
       prescription: {
         action: '先定位再读取：用 glob/grep 拿到结构后只读相关片段，不要在一个步骤里整份读取多个文件',
-        howTo: '对超过 2,000 token 的结果开启 spill，让 agent 按需回读；或按 offset/limit 分段读',
+        howTo: '按 offset/limit 分段读；非 read 工具的结果可另开 spill（read 被 spill-policy 豁免，配置无效）',
         expectedSavingTokens: [Math.round(cost * 0.3), Math.round(cost * 0.55)],
         basis: '估算：按只读必要片段后进入上下文的量削减 45–70% 计',
       },
@@ -223,9 +250,37 @@ export function prescribe(model) {
     });
   }
 
-  out.sort((a, b) => (b.prescription.expectedSavingTokens[1] ?? 0) - (a.prescription.expectedSavingTokens[1] ?? 0));
+  const merged = dedupe(out);
+  merged.sort((a, b) => (b.prescription.expectedSavingTokens[1] ?? 0) - (a.prescription.expectedSavingTokens[1] ?? 0));
 
-  return { conclusions: out, notes, headline: buildHeadline(model, out) };
+  return { conclusions: merged, notes, headline: buildHeadline(model, merged) };
+}
+
+/**
+ * 同一个 id 可能被两条规则同时命中（例如 read 整份读入既"滞留"又"一次性灌入"）。
+ * 合并成一条：证据并集、省量取较大区间，避免 UI 上出现两张同名卡片。
+ */
+function dedupe(list) {
+  const byId = new Map();
+  for (const c of list) {
+    const prev = byId.get(c.id);
+    if (!prev) { byId.set(c.id, { ...c }); continue; }
+    prev.evidence = [...new Set([...prev.evidence, ...c.evidence])].slice(0, 4);
+    const a = prev.prescription.expectedSavingTokens;
+    const b = c.prescription.expectedSavingTokens;
+    prev.prescription = {
+      ...prev.prescription,
+      ...(c.prescription.action.length > prev.prescription.action.length ? { action: c.prescription.action } : {}),
+      howTo: [prev.prescription.howTo, c.prescription.howTo].filter((x, i, arr) => arr.indexOf(x) === i).join('；'),
+      expectedSavingTokens: [Math.max(a[0], b[0]), Math.max(a[1], b[1])],
+    };
+    // 严重度取高者，标题保留信息量更大的那条
+    const rank = { low: 0, medium: 1, high: 2 };
+    if (rank[c.severity] > rank[prev.severity]) prev.severity = c.severity;
+    if (c.title.length > prev.title.length) prev.title = c.title;
+    if (c.fixable && !prev.fixable) prev.fixable = true;
+  }
+  return [...byId.values()];
 }
 
 function buildHeadline(model, conclusions) {
