@@ -72,6 +72,37 @@ http://127.0.0.1:<dsh端口>/dsh-cost-audit/
 
 `ui: false` 可关掉整个 Web 部分：路由不注册、按钮不注入，插件仍照常写报告文件。
 
+### 建议能直接执行
+
+每条建议右侧有「应用此修改」按钮。点开先给预览（目标文件 + 将写入的片段），确认后写入。
+
+| 建议 | 改什么 | 落点 |
+|---|---|---|
+| 上下文只增不减 | 启用工具结果裁剪（旧结果只留头尾） | `cordis.patch.yml` → `tool-result-pruner` |
+| 工具结果未落盘 | spill 阈值 12500 → 3000 | `cordis.patch.yml` → `spill-policy.maxInlineTokens` |
+| 一次性读太多 | 先 glob/grep 定位、超 300 行分段读 | 项目 `AGENTS.md` |
+| 整步空跑 | 写入环境事实（真实 cwd + package.json 里的命令） | 项目 `AGENTS.md` |
+
+缓存失效、静态底噪不给自动方案 —— 它们要么依赖前缀内容，要么需要插件级 schema 归因，
+硬改配置只会写进一条不生效的东西。
+
+安全约定：
+
+- **只追加带标记的块**（`# >>> dsh-cost-audit:<id>` … `# <<<`），不动你已有的任何行
+- 写前备份 `<文件>.bak-<时间戳>`；按钮变成「已应用 · 撤销」后可一键还原
+- 幂等：重复点不会重复写
+- 配置类改动**重启 DSH 后生效**；`AGENTS.md` 下一次任务就生效
+
+命令行等价操作：
+
+```bash
+node scripts/apply-fix.mjs --list
+node scripts/apply-fix.mjs --id=spill --dry-run
+node scripts/apply-fix.mjs --id=spill
+node scripts/apply-fix.mjs --id=spill --revert
+```
+
+
 **升级后旧报告不显示？** 0.7.0 之前只写 `.txt`，Web UI 读 `.json`。跑一次回填即可
 （用同一份会话日志重算，不伪造数字）：
 

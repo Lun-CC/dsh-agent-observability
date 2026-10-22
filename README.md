@@ -69,6 +69,10 @@ $DSH_HOME/dsh-audit/errors.log              仅出错时出现，宿主内绝不
 想在界面里看？插件会在宿主端口上开一个页面 `http://127.0.0.1:<端口>/dsh-cost-audit/`，
 并在右下角放一个「¥ 成本报告」按钮。页面自包含、无外部资源，左边选会话、右边看数字和正文。
 
+报告里的建议可以直接执行：页面按钮会把改动写进 `cordis.patch.yml`（spill 阈值、工具结果裁剪）
+或项目 `AGENTS.md`（读取约定、环境事实），带预览、备份与一键撤销。
+命令行等价：`node scripts/apply-fix.mjs --list`。
+
 安装只有一条命令（bundle 形态，`dsh plugin` 会同时写依赖和 `dsh.profile.bundles`）：
 
 ```bash

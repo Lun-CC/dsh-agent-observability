@@ -94,6 +94,11 @@ h2{font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--mu
 .fix .save{margin-left:auto;font:600 12px/1 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--ok);white-space:nowrap}
 .fix .act{margin-top:5px;font-size:13px}
 .fix .how{margin-top:4px;font-size:12px;color:var(--muted)}
+.fix .foot{margin-top:8px;display:flex;align-items:center;gap:8px}
+.fix .btn{font:500 12px/1 inherit;padding:5px 10px;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+.fix .btn:hover{border-color:var(--accent);color:var(--accent)}
+.fix .btn.done{border-color:var(--ok);color:var(--ok)}
+.fix .hint{font-size:11.5px;color:var(--muted)}
 details{margin-top:12px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
 summary{cursor:pointer;padding:9px 13px;font-size:12.5px;color:var(--muted);user-select:none}
 summary:hover{color:var(--ink)}
@@ -120,6 +125,9 @@ const fmt = (n) => (n == null ? '—' : Math.round(n).toLocaleString('en-US'));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const short = (id) => String(id || '').replace(/^session-/, '').slice(0, 8);
 const when = (t) => String(t || '').replace('T', ' ').slice(5, 16);
+// 注意：这段脚本是外层模板字符串的内容，写 \\n 会被外层先转义成真换行，
+// 放进单引号字符串里就变成语法错误。统一用编码生成换行符。
+const NL = String.fromCharCode(10, 10);
 let convs = [], current = null;
 
 async function j(url) {
@@ -158,7 +166,7 @@ function verdictLine(list, conv) {
   return (top.label || top.id) + ' 是最值得先改的一条，预计能省回 ' + shareText(top, conv.totalReal) + ' 的成本。';
 }
 
-function fixCards(list, total) {
+function fixCards(list, total, cwd) {
   if (!list.length) return '<div class="verdict">这次对话没发现结构性浪费，不需要改配置。</div>';
   return '<h2>建议</h2>' + list.map((p) => {
     const lo = Array.isArray(p.saving) ? p.saving[0] : 0;
@@ -172,6 +180,11 @@ function fixCards(list, total) {
       </div>
       \${p.action ? '<div class="act">' + esc(p.action) + '</div>' : ''}
       \${p.howTo ? '<div class="how">怎么改：' + esc(p.howTo) + '</div>' : ''}
+      \${p.fix ? '<div class="foot">' +
+        '<button class="btn' + (p.fix.applied ? ' done' : '') + '" data-fix="' + esc(p.id) + '">' +
+        (p.fix.applied ? '已应用 · 撤销' : '应用此修改：' + esc(p.fix.title)) + '</button>' +
+        '<span class="hint">' + esc(p.fix.applied ? (p.fix.requiresRestart ? '重启 DSH 后生效' : '已写入') : p.fix.note) + '</span>' +
+        '</div>' : ''}
     </div>\`;
   }).join('');
 }
@@ -195,17 +208,53 @@ function render(conv, d) {
       <div class="card"><div class="k">主会话缓存命中</div><div class="v">\${t.hitRate == null ? '—' : Math.round(t.hitRate * 100) + '%'}</div></div>
     </div>
     <p class="verdict">\${esc(verdictLine(list, conv))}</p>
-    \${fixCards(list, conv.totalReal)}
+    \${fixCards(list, conv.totalReal, (s.session && s.session.cwd) || '')}
     \${subs.length ? '<details><summary>子会话 ' + subs.length + ' 个 · 合计 ' + fmt(subTokens) + ' token</summary>' +
       subs.map((x) => '<div class="sub-row"><span>' + esc(short(x.id)) + '</span><span>' + fmt((x.totals || {}).totalReal) + ' tok · ' + fmt((x.totals || {}).requests) + ' 请求</span></div>').join('') +
       '</details>' : ''}
     <details><summary>完整报告（逐步账单、证据、口径）</summary><pre>\${esc(d.text || '(无正文)')}</pre></details>\`;
 }
 
+async function fixAction(p, action, cwd) {
+  const r = await fetch('/dsh-cost-audit/api/fix', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-dsh-audit': '1' },
+    body: JSON.stringify({ id: p.id, action, cwd }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || (r.status + ' ' + r.statusText));
+  return j;
+}
+
+async function onFix(p, cwd) {
+  try {
+    if (p.fix && p.fix.applied) {
+      if (!confirm('撤销「' + p.fix.title + '」？' + NL + '会删除插件写入的那一段，其它内容不动。')) return;
+      const r = await fixAction(p, 'revert', cwd);
+      alert(r.message || (r.ok ? '已撤销' : '未变更'));
+    } else {
+      const pv = await fixAction(p, 'preview', cwd);
+      const text = pv.preview ? (pv.preview.target + NL + pv.preview.text) : '(无预览)';
+      if (!confirm('将写入：' + NL + text + NL + '确认？')) return;
+      const r = await fixAction(p, 'apply', cwd);
+      alert(r.message || (r.ok ? '已应用' : '未变更'));
+    }
+    await boot();
+  } catch (e) {
+    alert('失败：' + e.message);
+  }
+}
+
 async function load(id) {
   try {
     const conv = convs.find((c) => c.primaryId === id) || { totalReal: 0, requests: 0, toolCalls: 0, failedCalls: 0 };
-    render(conv, await j('/dsh-cost-audit/api/report?id=' + encodeURIComponent(id)));
+    const d = await j('/dsh-cost-audit/api/report?id=' + encodeURIComponent(id));
+    render(conv, d);
+    const cwd = (d.summary && d.summary.session && d.summary.session.cwd) || '';
+    for (const el of document.querySelectorAll('[data-fix]')) {
+      const p = ((d.summary && d.summary.prescriptions) || []).find((x) => x.id === el.dataset.fix);
+      if (p) el.onclick = () => onFix(p, cwd);
+    }
   } catch (e) {
     $('#view').innerHTML = '<div class="empty err">读取失败：' + esc(e.message) + '</div>';
   }

@@ -7,6 +7,57 @@
 
 ---
 
+## [0.10.0] - 2026-10-22
+
+整改可执行。之前报告只说"建议开 spill"，用户看完还得自己去翻配置；
+现在每条建议直接对应一个**真实存在的配置项**或**项目约定文件**，点一下就能改，也能撤销。
+
+### 新增
+
+- `lib/fixes.mjs`：处方 → 可执行整改的映射与执行
+  - `spill` → `spill-policy.maxInlineTokens: 3000`
+  - `context-growth` → 启用 `tool-result-pruner`（`disabled: false` + 收紧阈值）
+  - `heavy-ingest` → 写 `AGENTS.md` 读取约定（先 glob/grep 定位、超 300 行分段读）
+  - `barren-steps` → 写 `AGENTS.md` 环境事实（真实 cwd + 从 package.json 读到的命令）
+- `POST /dsh-cost-audit/api/fix`：`preview` / `apply` / `revert` 三个动作
+- 页面每张建议卡加「应用此修改」按钮：先弹预览（目标文件 + 将写入的片段），
+  应用后按钮变「已应用 · 撤销」，并标注"重启 DSH 后生效"
+- `scripts/apply-fix.mjs`：命令行版（`--list` / `--dry-run` / `--id=` / `--revert`），
+  改完自动跑一次 `--dump-config` 断言配置真的进了组装树
+
+### 设计约束（写进代码注释，也写在这里）
+
+- **只追加带标记的块**（`# >>> dsh-cost-audit:<id>` … `# <<<`），不碰用户已有内容
+- 写前备份 `<文件>.bak-<时间戳>`；撤销按标记整块删除
+- 幂等：重复应用返回"已经应用过了"，不重复写
+- **不碰 compaction**：它的生效实例在 preset 分组内部（`- id: compaction` 嵌套行），
+  顶层 patch 改不到；硬改只会写进一条不生效的配置
+- POST 要求 `x-dsh-audit: 1` 自定义头（跨站带不上，会先触发 preflight），
+  非回环 Host 走 `connection.requestRejection`，失败即 403
+
+### 修复
+
+- 页面内联脚本里的换行原先写 `\n`，被外层模板字符串提前转义成真换行，
+  塞进单引号字符串就成了语法错误（`Unexpected token`）。改用编码生成，并加了解析测试
+- `apply-fix.mjs` 在 Windows 上无法直接执行 `node_modules/.bin/dsh`（那是 shell 脚本），
+  改为用 `node .../dsh/lib/bin.js` 调用
+
+### 实测
+
+```
+改前：spill-policy.config.maxInlineTokens = 12500
+应用：写入 cordis.patch.yml（备份 + 标记块）
+改后：spill-policy.config.maxInlineTokens = 3000
+撤销：回到 12500，patch 文件恢复原样
+```
+
+顺带确认了一个此前没注意的事实：**spill 默认阈值是 12500 token**，
+比报告里建议的 2000–4000 高一个数量级 —— 这就是为什么 2k 的工具结果一直留在上下文里。
+
+测试 43 → 56（新增 `test/fixes.test.mjs` 13 条：标记块、幂等、撤销、CSRF、预览不落盘）。
+
+---
+
 ## [0.9.0] - 2026-10-21
 
 按用户反馈重做信息架构：**文件继续详细，页面只留能立刻做决定的那些**。

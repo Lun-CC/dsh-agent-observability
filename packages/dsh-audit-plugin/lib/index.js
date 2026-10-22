@@ -32,6 +32,7 @@ import { prescribe } from './core/prescribe.mjs';
 import { renderReport } from './core/report.mjs';
 import { loadedFromSnapshot, attachMeasure } from './adapter.mjs';
 import { renderPage, injectEntry, ENTRY_JS } from './webui.mjs';
+import { decorateFixes, applyFix, revertFix, previewFix, resolveProfileDir } from './fixes.mjs';
 
 export const name = 'dsh-cost-audit';
 
@@ -315,7 +316,29 @@ export function apply(ctx, config = {}) {
             const siblings = listSummaries(outDir)
               .filter((r) => (r.rootId ?? r.id) === rootId && r.id !== id)
               .map((r) => ({ id: r.id, top: !!r.top, totals: r.totals, generatedAt: r.generatedAt }));
+            // 整改可用性在读时计算：应用/撤销之后立刻反映到页面
+            if (summary) {
+              const profileDir = resolveProfileDir(process.env.DSH_HOME || join(homedir(), '.dsh'));
+              summary.prescriptions = decorateFixes(summary.prescriptions, { profileDir, cwd: summary.session?.cwd });
+            }
             return { json: { summary, text, siblings } };
+          },
+        ],
+        [
+          '/dsh-cost-audit/api/fix',
+          async (req) => {
+            if (req.method !== 'POST') return { status: 405, json: { error: 'method not allowed' } };
+            // 自定义头是 CSRF 防线：跨站请求带不上它（会先触发 preflight）
+            if (String(req.headers['x-dsh-audit'] ?? '') !== '1') return { status: 403, json: { error: 'missing x-dsh-audit header' } };
+            const body = await readJsonBody(req);
+            if (!body || typeof body.id !== 'string') return { status: 400, json: { error: 'bad body' } };
+            const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh');
+            if (body.action === 'preview') return { json: { ok: true, preview: previewFix(body.id, { cwd: body.cwd, profileDir: resolveProfileDir(dshHome) }) } };
+            const result = body.action === 'revert'
+              ? revertFix(body.id, { dshHome, cwd: body.cwd })
+              : applyFix(body.id, { dshHome, cwd: body.cwd });
+            if (result.changed) log('fix', `${body.action} ${body.id} → ${result.file ?? ''}`);
+            return { json: { ok: result.changed, ...result } };
           },
         ],
       ];
@@ -325,7 +348,7 @@ export function apply(ctx, config = {}) {
           webServer.register({
             kind: 'exact',
             path,
-            handler: (req, res) => {
+            handler: async (req, res) => {
               try {
                 if (!allowedRequest(req, ctx)) {
                   res.statusCode = 403;
@@ -333,7 +356,7 @@ export function apply(ctx, config = {}) {
                   res.end('forbidden');
                   return;
                 }
-                const out = fn(req, res) ?? {};
+                const out = (await fn(req, res)) ?? {};
                 const status = out.status ?? 200;
                 if (out.html !== undefined) {
                   res.statusCode = status;
@@ -449,6 +472,30 @@ function tryGet(ctx, name) {
   } catch {
     return null;
   }
+}
+
+/** 读 JSON 请求体（限 64KB，超了就断开）。 */
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    const done = (v) => {
+      try { req.removeListener('data', onData); } catch { /* ignore */ }
+      resolve(v);
+    };
+    const onData = (chunk) => {
+      data += chunk;
+      if (data.length > 64 * 1024) done(null);
+    };
+    req.on('data', onData);
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(data || '{}'));
+      } catch {
+        resolve(null);
+      }
+    });
+    req.on('error', () => resolve(null));
+  });
 }
 
 function queryOf(req) {

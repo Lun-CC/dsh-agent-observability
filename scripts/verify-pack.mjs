@@ -25,6 +25,7 @@ const requireFiles = [
   'lib/index.js',
   'lib/adapter.mjs',
   'lib/webui.mjs',
+  'lib/fixes.mjs',
   'lib/core/analyze.mjs',
   'lib/core/session.mjs',
   'lib/core/prescribe.mjs',
