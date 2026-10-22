@@ -1,6 +1,6 @@
 {
   "name": "dsh-audit-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "会话成本审计：看看一次对话的 token 花在哪、哪一步贵，并把优化建议做成一键可应用的修改。",
   "repository": {
     "type": "git",
