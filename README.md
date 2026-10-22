@@ -1,4 +1,5 @@
 # dsh-audit-plugin
+## 本插件由AI生成
 
 让 DeepSeek Harness 的每次对话都留下一份成本账单：花了多少 token、哪一步贵、改什么能省回来。
 装好后每个 turn 结束自动审计（只监听 `session/flush`），Web 界面右下角会多一个「¥ 成本报告」入口。
