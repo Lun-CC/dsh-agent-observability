@@ -9,18 +9,71 @@
  * 不需要启动 DSH，不需要 API key：只读本地已落盘的 session 日志。
  */
 
-import { statSync, existsSync, readdirSync } from 'node:fs';
+import { statSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadSession, listSessionDirs } from '../src/lib/session.mjs';
 import { analyze } from '../src/lib/analyze.mjs';
 import { prescribe } from '../src/lib/prescribe.mjs';
 import { renderReport } from '../src/lib/report.mjs';
 
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+const USAGE = `
+dsh-audit — 离线审计 DSH 会话日志，输出「结论 + 处方」
+
+用法：
+  dsh-audit <session目录 | session.v4.jsonl.zstd | sessions根目录> [选项]
+  dsh-audit <目录> --json
+
+选项：
+  --json              输出机器可读 JSON（数组，每个会话一项）
+  --tool-limit=N      文本报告里工具表最多显示 N 行（默认 10，也可写成 --tool-limit N）
+  -h, --help          显示本帮助
+  -V, --version       显示版本号
+
+退出码：
+  0  至少一个会话分析成功
+  1  全部会话读取失败
+  2  参数错误（缺目标路径 / 路径不存在 / 选项值非法）
+
+示例：
+  dsh-audit ~/.dsh/sessions --json
+  dsh-audit <会话目录> --tool-limit=5
+`.trim();
+
+/** 版本号从最近的 package.json 读（仓库内是根包，npm 安装后是插件包） */
+function pkgVersion() {
+  try {
+    return JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8')).version;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function fail(message) {
+  console.error(`错误：${message}`);
+  process.exit(2);
+}
+
 function parseArgs(argv) {
-  const out = { target: null, json: false, toolLimit: 10 };
-  for (const a of argv.slice(2)) {
-    if (a === '--json') out.json = true;
-    else if (a.startsWith('--tool-limit=')) out.toolLimit = Number(a.split('=')[1]);
-    else if (!a.startsWith('--')) out.target = a;
+  const out = { target: null, json: false, toolLimit: 10, help: false, version: false };
+  const args = argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--help' || a === '-h') out.help = true;
+    else if (a === '--version' || a === '-V') out.version = true;
+    else if (a === '--json') out.json = true;
+    else if (a === '--tool-limit') {
+      const v = Number(args[++i]);
+      if (!Number.isFinite(v) || v < 0) fail('--tool-limit 需要一个非负整数');
+      out.toolLimit = v;
+    } else if (a.startsWith('--tool-limit=')) {
+      const v = Number(a.split('=')[1]);
+      if (!Number.isFinite(v) || v < 0) fail('--tool-limit 需要一个非负整数');
+      out.toolLimit = v;
+    } else if (!a.startsWith('--')) out.target = a;
+    else fail(`未知选项：${a}（用 --help 查看用法）`);
   }
   return out;
 }
@@ -50,12 +103,19 @@ function runOne(dir) {
 
 function main() {
   const args = parseArgs(process.argv);
+  if (args.help) {
+    console.log(USAGE);
+    return;
+  }
+  if (args.version) {
+    console.log(pkgVersion());
+    return;
+  }
   let targets;
   try {
     targets = resolveSessions(args.target);
   } catch (e) {
-    console.error(`错误：${e.message}`);
-    process.exit(2);
+    fail(e.message);
   }
 
   const results = [];

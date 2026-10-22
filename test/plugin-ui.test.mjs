@@ -9,14 +9,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-audit-ui-'));
 process.env.DSH_HOME = home;
 
-const { apply } = await import('../packages/dsh-audit-plugin/lib/index.js');
+const { apply, writeAtomic } = await import('../packages/dsh-audit-plugin/lib/index.js');
 const { renderPage, injectEntry, ENTRY_JS, ENTRY_SNIPPET } = await import('../packages/dsh-audit-plugin/lib/webui.mjs');
 
 const usage = (i, c, o) => ({ inputTokens: i, cacheReadTokens: c, cacheWriteTokens: 0, outputTokens: o, totalTokens: i + c + o });
@@ -37,12 +37,24 @@ function fakeCtx() {
   const handlers = {};
   const routes = new Map();
   const taps = [];
+  const effects = [];
   return {
     _h: handlers,
     _routes: routes,
     _taps: taps,
+    _effects: effects,
     on(ev, fn) {
       handlers[ev] = fn;
+    },
+    // 模拟 Cordis Fiber#effect：execute 返回 disposer，dispose 时调用
+    effect(execute) {
+      const d = execute();
+      effects.push(d);
+      return () => {
+        const i = effects.indexOf(d);
+        if (i !== -1) effects.splice(i, 1);
+        if (typeof d === 'function') d();
+      };
     },
     get(name) {
       if (name === 'webServer') return this._webServer;
@@ -50,14 +62,27 @@ function fakeCtx() {
       return undefined;
     },
     sessionQuery: { readSession: async (id) => snapshot(id, id.includes('child') ? 'session-ui' : null) },
+    // 模拟 Cordis 的 inject：依赖就绪后触发回调。默认同步触发；用例可关闭后手动触发，
+    // 以覆盖「apply 时 webServer 尚未就绪」的分支。
+    inject(names, cb) {
+      this._injected = names;
+      this._injectCb = cb;
+      if (this._autoInject) cb(this);
+    },
+    _autoInject: true,
     _webServer: {
       register(route) {
+        // 与 dsh-host-webserver 一致：重复注册是硬错误（errors.log 里那批 duplicate 就是它）
+        if (routes.has(route.path)) throw new Error(`webserver: duplicate exact route "${route.path}"`);
         routes.set(route.path, route);
         return () => routes.delete(route.path);
       },
       tapIndex(fn) {
         taps.push(fn);
-        return () => {};
+        return () => {
+          const i = taps.indexOf(fn);
+          if (i !== -1) taps.splice(i, 1);
+        };
       },
     },
   };
@@ -223,6 +248,71 @@ test('信任栅栏：非回环 Host 与非同源 Origin 被拒，回环放行', 
   assert.equal(crossSite.status, 200);
 });
 
+test('apply 返回反注册函数：dispose 后路由与 tapIndex 全部撤销', () => {
+  const ctx = fakeCtx();
+  const off = apply(ctx, { minIntervalMs: 0 });
+  assert.equal(
+    typeof off,
+    'function',
+    'apply 必须返回反注册函数（Cordis effect body）：宿主 dispose 插件后不撤销路由，HMR/重复 apply 会撞 duplicate',
+  );
+  assert.equal(ctx._routes.size, 5);
+  assert.equal(ctx._taps.length, 1);
+  off();
+  assert.equal(ctx._routes.size, 0, 'dispose 后必须撤销全部路由');
+  assert.equal(ctx._taps.length, 0, 'dispose 后必须撤销 tapIndex 注入');
+  assert.doesNotThrow(() => off(), '反注册必须幂等（Cordis 可能调用两次）');
+});
+
+test('宿主 Cordis 生命周期：ctx.effect 注册的反注册钩子在 dispose 时调用', () => {
+  const ctx = fakeCtx();
+  apply(ctx, { minIntervalMs: 0 });
+  assert.equal(ctx._effects.length, 1, '应通过 ctx.effect 注册一个反注册钩子');
+  ctx._effects[0](); // 模拟宿主 fiber dispose 插件
+  assert.equal(ctx._routes.size, 0, 'fiber dispose 后路由必须撤销');
+  assert.equal(ctx._taps.length, 0, 'fiber dispose 后 tapIndex 必须移除');
+  assert.doesNotThrow(() => ctx._effects[0]());
+});
+
+test('重复 apply（HMR / dshmarket hot-mount）不产生 duplicate route', async () => {
+  const outDir = join(home, 'dsh-audit');
+  const errFile = join(outDir, 'errors.log');
+  const before = existsSync(errFile) ? readFileSync(errFile, 'utf8') : '';
+  const ctx = fakeCtx();
+  const off1 = apply(ctx, { minIntervalMs: 0 });
+  off1();
+  const off2 = apply(ctx, { minIntervalMs: 0 }); // 模拟宿主卸载插件后再次 apply
+  assert.equal(ctx._routes.size, 5, '重新 apply 后应仍是 5 条路由，而不是叠加成 10 条');
+  assert.equal(ctx._taps.length, 1, 'tapIndex 不应重复注入');
+  off2();
+  const after = existsSync(errFile) ? readFileSync(errFile, 'utf8') : '';
+  const added = after.slice(before.length);
+  assert.doesNotMatch(added, /route:register/, `重复 apply 不应注册失败：${added}`);
+  assert.doesNotMatch(added, /duplicate/, `重复 apply 不应出现 duplicate 路由：${added}`);
+});
+
+test('webServer 未就绪时等 inject 回调注册，回调重复触发也只注册一次', () => {
+  const ctx = fakeCtx();
+  const server = ctx._webServer;
+  ctx._webServer = undefined; // apply 时 webServer 还没就绪
+  ctx._autoInject = false;
+  const off = apply(ctx, { minIntervalMs: 0 });
+  assert.deepEqual(ctx._injected, ['webServer'], '应通过 ctx.inject 等待 webServer');
+  assert.equal(ctx._routes.size, 0, 'webServer 未就绪时不应注册路由');
+
+  ctx._webServer = server;
+  ctx._injectCb(ctx); // 宿主 webServer 就绪后触发注入回调
+  assert.equal(ctx._routes.size, 5);
+  assert.equal(ctx._taps.length, 1);
+  ctx._injectCb(ctx); // 宿主重复触发：wire 幂等，不能再注册一遍
+  assert.equal(ctx._routes.size, 5, '重复触发注入回调不应叠加路由');
+  assert.equal(ctx._taps.length, 1, '重复触发注入回调不应重复注入 index');
+
+  off();
+  assert.equal(ctx._routes.size, 0);
+  assert.equal(ctx._taps.length, 0);
+});
+
 test('ui:false 时不注册任何路由（插件仍写报告）', async () => {
   const ctx = fakeCtx();
   apply(ctx, { minIntervalMs: 0, ui: false });
@@ -230,4 +320,47 @@ test('ui:false 时不注册任何路由（插件仍写报告）', async () => {
   await tick();
   assert.equal(ctx._routes.size, 0);
   assert.ok(existsSync(join(home, 'dsh-audit', 'report-session-noui.txt')));
+});
+
+test('写盘为临时文件 + rename 原子写：无 .tmp- 残留，latest.txt 带 ISO 生成时间', async () => {
+  await bootWithReport();
+  const outDir = join(home, 'dsh-audit');
+  const names = readdirSync(outDir);
+  const leftovers = names.filter((n) => n.includes('.tmp-'));
+  assert.deepEqual(leftovers, [], `写盘失败会残留半截临时文件：${leftovers.join(', ')}`);
+
+  const latestJson = JSON.parse(readFileSync(join(outDir, 'latest.json'), 'utf8'));
+  assert.ok(latestJson.generatedAt, 'latest.json 必须有 generatedAt，否则无法判断报告新旧');
+  const latestTxt = readFileSync(join(outDir, 'latest.txt'), 'utf8');
+  assert.match(
+    latestTxt,
+    /生成时间 \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    'latest.txt 必须带 ISO 生成时间（用户要能判断这份报告有多旧）',
+  );
+  // 会话报告 txt/json 成对出现且 json 可解析
+  for (const ext of ['txt', 'json']) assert.ok(existsSync(join(outDir, `report-session-ui.${ext}`)));
+  assert.equal(JSON.parse(readFileSync(join(outDir, 'report-session-ui.json'), 'utf8')).id, 'session-ui');
+});
+
+test('writeAtomic rename 失败时清掉临时文件并抛出', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-audit-atomic-'));
+  const target = join(dir, 'target-is-a-dir');
+  mkdirSync(target); // rename 到目录上必然失败
+  assert.throws(() => writeAtomic(target, 'hello'));
+  const leftovers = readdirSync(dir).filter((n) => n.includes('.tmp-'));
+  assert.deepEqual(leftovers, [], 'rename 失败后必须清掉临时文件，否则会被 prune/listSummaries 扫到');
+});
+
+test('errors.log 超过阈值时按写盘时机轮转（不是只在启动时检查）', async () => {
+  const ctx = fakeCtx();
+  apply(ctx, { minIntervalMs: 0, ui: false, debugTriggers: true, maxErrorLogBytes: 400 });
+  for (let i = 0; i < 12; i++) ctx._h['session/flush']({ header: { id: `session-rot-${i}` }, log: {} });
+  await tick(120);
+  const outDir = join(home, 'dsh-audit');
+  const rotated = join(outDir, 'errors.log.1');
+  assert.ok(existsSync(rotated), '超过 maxErrorLogBytes 后应轮转到 errors.log.1');
+  assert.ok(statSync(rotated).size > 0, '轮转档不应为空');
+  // 轮转是在「追加前」检查的：当前文件最多超出阈值一行
+  const size = statSync(join(outDir, 'errors.log')).size;
+  assert.ok(size <= 400 + 200, `轮转后当前 errors.log 应回落到阈值附近，实际 ${size} B`);
 });

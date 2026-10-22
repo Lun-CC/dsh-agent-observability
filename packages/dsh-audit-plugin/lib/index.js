@@ -72,11 +72,24 @@ const DEFAULTS = {
   ui: true,
 };
 
-/** 原子写：先写临时文件再 rename，避免半截文件。 */
-function writeAtomic(file, text) {
+/**
+ * 原子写：先写临时文件再 rename，避免半截文件。
+ *
+ * 失败（磁盘满 / 目标被占用 / rename 被拒）时必须清掉临时文件再抛出：
+ * 残留的 `report-<id>.txt.tmp-<pid>` 会被 listSummaries/prune 当成报告文件扫到，
+ * 也会在反复失败后堆积。导出给单测模拟 rename 失败用。
+ */
+export function writeAtomic(file, text) {
   const tmp = `${file}.tmp-${process.pid}`;
-  writeFileSync(tmp, text, 'utf8');
-  renameSync(tmp, file);
+  try {
+    writeFileSync(tmp, text, 'utf8');
+    renameSync(tmp, file);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch { /* 临时文件可能根本没创建成功 */ }
+    throw e;
+  }
 }
 
 function ensureDir(dir) {
@@ -262,6 +275,45 @@ export function apply(ctx, config = {}) {
     log('hook:flush', String(e?.message ?? e));
   }
 
+  // ── 生命周期：反注册 ─────────────────────────────────────────────────
+  // 宿主 dispose 插件（HMR / dshmarket hot-mount / 配置重载）时，webServer 路由与
+  // index tap 不会随插件 scope 自动清理：dsh-host-webserver 的 register/tapIndex
+  // 返回 disposer，必须自己调用。不撤就会在同一宿主进程里留下 5 条 exact route，
+  // 下次 apply 逐条撞 `webserver: duplicate exact route "<path>"` —— 这就是
+  // errors.log 里 2026-10-21T16:44 / 2026-10-22T09:39 两批重复路由的成因
+  // （用 HEAD 版 index.js + 假宿主可复现：apply → dispose → apply 恰好得到 5 条
+  // 与生产日志同形的 duplicate 行）。
+  const uiDisposers = [];
+  let uiDisposed = false;
+  const disposeUi = () => {
+    if (uiDisposed) return;
+    uiDisposed = true;
+    for (let i = uiDisposers.length - 1; i >= 0; i--) {
+      try {
+        uiDisposers[i]();
+      } catch (e) {
+        log('ui:dispose', String(e?.message ?? e));
+      }
+    }
+    uiDisposers.length = 0;
+  };
+  const trackDisposer = (d) => {
+    if (typeof d !== 'function') return;
+    if (uiDisposed) {
+      // 插件已 dispose 之后才异步注册（inject 回调晚到）→ 立即补撤销，别留孤儿路由
+      try { d(); } catch { /* ignore */ }
+      return;
+    }
+    uiDisposers.push(d);
+  };
+  // 交给 Cordis effect 管理（与对照实现 dsh-whale-widget 的写法一致）；
+  // 没有 effect 的假 ctx 也支持直接调用 apply 的返回值。
+  try {
+    if (typeof ctx.effect === 'function') ctx.effect(() => disposeUi, `${name}:webui`);
+  } catch (e) {
+    log('ui:effect', String(e?.message ?? e));
+  }
+
   // ── Web UI ────────────────────────────────────────────────────────────
   if (cfg.ui) {
     // 桌面壳的结构化注入行必须在插件加载期就挂上（宿主启动时收集一次并缓存）
@@ -281,8 +333,13 @@ export function apply(ctx, config = {}) {
       log('ui:hook', String(e?.message ?? e));
     }
 
+    // 幂等保护：正常路径只会 wire 一次（webServer 已就绪走 tryGet，否则等 inject
+    // 回调），这里再兜一层，避免宿主以不同时机重复触发注入回调时重复注册。
+    let wired = false;
     const wire = (webServer) => {
+      if (wired) return;
       if (!webServer || typeof webServer.register !== 'function') return;
+      wired = true;
       const routes = [
         ['/dsh-cost-audit', () => ({ html: renderPage() })],
         ['/dsh-cost-audit/', () => ({ html: renderPage() })],
@@ -345,7 +402,8 @@ export function apply(ctx, config = {}) {
 
       for (const [path, fn] of routes) {
         try {
-          webServer.register({
+          // register 返回 disposer：必须保留，dispose 插件时路由才会撤销
+          trackDisposer(webServer.register({
             kind: 'exact',
             path,
             handler: async (req, res) => {
@@ -377,7 +435,7 @@ export function apply(ctx, config = {}) {
                 } catch { /* ignore */ }
               }
             },
-          });
+          }));
         } catch (e) {
           log('route:register', `${path} ${e?.message ?? e}`);
         }
@@ -385,7 +443,7 @@ export function apply(ctx, config = {}) {
 
       // 浏览器形态：直接改 index.html
       try {
-        if (typeof webServer.tapIndex === 'function') webServer.tapIndex(injectEntry);
+        if (typeof webServer.tapIndex === 'function') trackDisposer(webServer.tapIndex(injectEntry));
       } catch (e) {
         log('route:tapIndex', String(e?.message ?? e));
       }
@@ -407,6 +465,10 @@ export function apply(ctx, config = {}) {
       log('ui', String(e?.message ?? e));
     }
   }
+
+  // Cordis 把插件 startup 的返回值当 effect body：返回 disposer 后，宿主 dispose
+  // 插件时路由会被撤销；假 ctx 也可以直接调用它。
+  return disposeUi;
 }
 
 /**

@@ -8,12 +8,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '24.x']
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.19.0'
+          node-version: ${{ matrix.node }}
 
       - name: 版本一致性（仓库根与插件包）
         run: |
@@ -24,22 +28,40 @@ jobs:
           console.log('版本一致:',a);
           "
 
-      - name: 同步分析内核（src/lib → 插件 lib/core）
+      - name: 同步分析内核与离线 CLI（src/lib、bin → 插件包）
         run: node scripts/sync-core.mjs
 
-      - name: 内核是否与真源一致（同步后不应有改动）
-        run: git diff --exit-code packages/dsh-audit-plugin/lib/core
+      - name: 派生文件是否与真源一致（同步后不应有改动）
+        run: git diff --exit-code -- packages/dsh-audit-plugin/lib/core packages/dsh-audit-plugin/bin
 
       - name: 单元测试
         run: |
           node --test test/metrics.test.mjs
           node --test test/plugin.test.mjs
           node --test test/plugin-audit.test.mjs
+          node --test test/plugin-ui.test.mjs
+          node --test test/fixes.test.mjs
+          node --test test/cli.test.mjs
+          node --test test/cli-pack.test.mjs
 
       - name: 打包清单断言
         run: |
           node scripts/prepare-pack.mjs
           node scripts/verify-pack.mjs
+
+      - name: tarball 里确实带上了 bin 与英文 README
+        run: |
+          cd packages/dsh-audit-plugin
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e "
+          const fs=require('fs');
+          const [r]=JSON.parse(fs.readFileSync('/tmp/pack.json','utf8'));
+          const files=new Set(r.files.map(f=>f.path));
+          for (const need of ['bin/dsh-audit.mjs','lib/index.js','lib/core/analyze.mjs','README.en.md','cordis.patch.yml']) {
+            if(!files.has(need)){console.error('tarball 缺少:',need);process.exit(1)}
+          }
+          console.log('tarball 文件数:',files.size,'含 bin/dsh-audit.mjs ✅');
+          "
 
       - name: 图标可复现
         run: |

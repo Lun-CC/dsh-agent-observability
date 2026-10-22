@@ -1,7 +1,7 @@
 # dsh-audit-plugin
 
-DeepSeek Harness 的**会话级成本审计**插件。每次会话落盘后自动审计，
-把 token 花在哪些节点上算清楚，并给出可执行的修改建议。
+DeepSeek Harness 的**会话级成本审计**插件（当前版本 **1.0.0**）。每次会话落盘后自动审计，
+把 token 花在哪些节点上算清楚，给出可执行处方，并提供一个带「应用此修改」按钮的 Web 报告页。
 
 > 不是画时间轴，是回答「哪一步白花了钱、改什么能省回来」。
 
@@ -10,7 +10,20 @@ DeepSeek Harness 的**会话级成本审计**插件。每次会话落盘后自�
 **会话成本审计**（token 花在哪、怎么省）是两件事。为避免 loader 条目 id 冲突，
 本插件的挂载 id 是 `dsh-cost-audit`。两者可以同时安装。
 
+> 仓库 / issue：<https://github.com/Lun-CC/dsh-agent-observability>（源码在
+> `packages/dsh-audit-plugin`，离线 CLI 在仓库根 `bin/dsh-audit.mjs`）。
+
 ---
+
+## 环境要求
+
+| 项 | 要求 |
+|---|---|
+| Node | `^22.19.0 || >=24`（依赖内置 zstd 解压） |
+| DSH | `>=0.2.0-rc.2`（`engines.dsh`；已在 0.2.0-rc.2 与 0.2.1-rc.2 上实测加载） |
+| 必需服务 | `sessionQuery` |
+| 可选服务 | `tokenMeter`（开发者预览；缺失时降级，不阻塞加载） |
+| 形态 | bundle 包（`dsh.bundle.patch` + `manifestVersion: 1`） |
 
 ## 安装
 
@@ -18,35 +31,107 @@ DeepSeek Harness 的**会话级成本审计**插件。每次会话落盘后自�
 dsh plugin --profile web add dsh-audit-plugin
 ```
 
-装完在 Web UI 的「插件」页 →「已安装插件」里可见，默认启用。
+装完在 Web UI 的「插件」页 →「已安装插件」里可见，默认启用，之后每个 `session/flush` 自动审计。
 
 本地开发用 `file:`（`link:` 会半途失败：写了 manifest 但没落 `node_modules`）：
 
 ```bash
-dsh plugin --profile web add file:/绝对路径/packages/dsh-audit-plugin
+dsh plugin --profile web add file:<绝对路径>/packages/dsh-audit-plugin
+```
+
+改了 `src/lib` 后先 `node scripts/sync-core.mjs` 同步内核，再重启 dsh。
+
+## 自带离线 CLI（1.0.0 起）
+
+包内带 `bin/dsh-audit.mjs`（由 `scripts/sync-core.mjs` 从仓库根同名文件派生，行为一致），
+装完插件后入口在 profile 的 `node_modules/.bin/dsh-audit`（pnpm 本地链入；不加 PATH 就写
+完整路径，或给命令加 `npx --yes --package=dsh-audit-plugin --` 前缀）。不需要启动 DSH、
+不需要 API key：
+
+```bash
+dsh-audit ~/.dsh/sessions/--E-aibuild--/session-xxxx      # 分析一个会话目录
+dsh-audit ~/.dsh/sessions                                  # 整个 sessions 根目录（多会话速览）
+dsh-audit ~/.dsh/sessions --tool-limit=5                   # 工具表最多列 5 条（也可 --tool-limit 5）
+dsh-audit ~/.dsh/sessions --json                           # 机器可读
+dsh-audit --help                                           # 用法 / 选项 / 退出码
+dsh-audit --version                                        # 1.0.0
+```
+
+参数：`<session 目录 | .jsonl.zstd 文件>`、`--json`、`--tool-limit=<N>` / `--tool-limit N`
+（文本报告工具表最多列 N 条，默认 10）、`-h/--help`、`-V/--version`；未知选项报错。
+退出码：`0` 至少一个会话成功，`1` 全部失败，`2` 参数错误（缺目标 / 路径不存在 / 选项值非法）。
+没装插件也能一次性运行：
+
+```bash
+npx --yes --package=dsh-audit-plugin dsh-audit <会话目录>
+```
+
+离线 CLI 只看本地已落盘的 `session.v4.jsonl.zstd`，所以没有「平台定价」区块
+（那部分需要宿主内 `ctx.tokenMeter`）。
+
+## 升级
+
+```bash
+dsh plugin --profile web add dsh-audit-plugin@latest
+```
+
+旧报告仍在 `$DSH_HOME/dsh-audit/`。0.8.0 之前只写 `.txt`，Web UI 读 `.json`；
+跑一次回填即可（用同一份会话日志重算，不伪造数字）：
+
+```bash
+node scripts/backfill-summaries.mjs --dry-run   # 先看会写哪些
+node scripts/backfill-summaries.mjs
 ```
 
 ## 卸载
 
 ```bash
 dsh plugin --profile web remove dsh-audit-plugin
-rm -rf "$DSH_HOME/dsh-audit"        # Windows: %USERPROFILE%\.dsh\dsh-audit
+```
+
+报告目录不会自动删除，需要手动清理：
+
+```pwsh
+# PowerShell
+Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\dsh-audit"
+```
+
+```bash
+# bash
+rm -rf "$DSH_HOME/dsh-audit"
 ```
 
 ---
 
+## 装完能看到什么
+
+- **Web UI 右下角「¥ 成本报告」按钮** → 打开 `http://127.0.0.1:<dsh端口>/dsh-cost-audit/`
+- **首屏三样东西**：数字卡片 → 一句话判断 → 建议卡（标签 / 动作 / 怎么改 / 可省多少）
+- 完整报告（逐步账单、证据、口径）折叠在 `<details>` 里，不占首屏
+- 左侧按**对话**列出：subagent 归到发起它的主会话下，不单独占一条
+- 页面自包含（无外部资源、无 CDN），跟随系统深浅色
+- 每份建议卡右侧有「应用此修改」按钮，可直接整改并撤销（见下文）
+
+不需要手动触发：插件只监听 `session/flush`（持久化检查点，覆盖 turn 结束），
+新装后等第一个 turn 结束就有第一份报告。
+
 ## 输出
 
 ```
-$DSH_HOME/dsh-audit/latest.txt              最近一次顶层会话的完整报告
+$DSH_HOME/dsh-audit/latest.txt              最近一次顶层会话的完整报告（首行带生成时间）
+$DSH_HOME/dsh-audit/latest.json             同一份结果的结构化摘要（Web UI 消费）
 $DSH_HOME/dsh-audit/report-<sessionId>.txt  按会话归档（subagent 也各有一份）
-$DSH_HOME/dsh-audit/report-<sessionId>.json 同一份结果的结构化摘要（Web UI 消费）
-$DSH_HOME/dsh-audit/errors.log              仅出错时出现
+$DSH_HOME/dsh-audit/report-<sessionId>.json 按会话归档的结构化摘要
+$DSH_HOME/dsh-audit/errors.log              仅出错时出现；宿主内绝不向事件链抛异常
+$DSH_HOME/dsh-audit/debug-snapshot.json     仅 debugShape: true 时出现（排查完请删除）
 ```
 
-- `latest.txt` **只由顶层会话写**（`parentId == null`），subagent 的报告不会顶掉主报告
+- `latest.*` **只由顶层会话写**（`parentSession` / `parentId` 为空且 `delegationDepth === 0`），
+  subagent 的报告不会顶掉主报告
 - 首行带 `生成时间`，能判断报告新旧
-- 保留策略：最多 `maxReports` 份、最旧 `maxAgeDays` 天，超出自动清理
+- 保留策略：最多 `maxReports` 份、最旧 `maxAgeDays` 天，超出自动清理（`.txt` 与同名 `.json` 一起删）
+- `errors.log` 超过 `maxErrorLogBytes` 自动轮转为 `errors.log.1`
+- 所有写盘都是「临时文件 + rename」，进程被杀不留半截文件
 
 ## Web UI
 
@@ -56,12 +141,14 @@ $DSH_HOME/dsh-audit/errors.log              仅出错时出现
 http://127.0.0.1:<dsh端口>/dsh-cost-audit/
 ```
 
-- 右下角一个「¥ 成本报告」按钮，点开就是这个页面（`target=_blank`）
-- 左侧按**对话**列出（subagent 归到主会话下，不单独占一条）
-- 右侧顺序固定：数字卡片 → 一句话判断 → 建议卡（标签 / 动作 / 怎么改 / 可省多少）
-- 完整报告（逐步账单、证据、口径）折叠在 `<details>` 里，不占首屏
-- 默认选中"有实际请求"的对话：空会话不该占住首屏
-- 页面自包含（无外部资源、无 CDN），跟随系统深浅色
+路由（挂在宿主的 `ctx.webServer` 上，全部只读 GET）：
+
+| 路由 | 用途 |
+|---|---|
+| `GET /dsh-cost-audit/` | 报告页 |
+| `GET /dsh-cost-audit/api/list` | 报告列表 + 对话聚合 + latest |
+| `GET /dsh-cost-audit/api/report?id=` | 单份摘要 + 正文 + 同对话子会话 |
+| `POST /dsh-cost-audit/api/fix` | 整改 `preview` / `apply` / `revert` |
 
 实现方式（两种注入通道，覆盖两种宿主形态）：
 
@@ -79,7 +166,7 @@ http://127.0.0.1:<dsh端口>/dsh-cost-audit/
 | 建议 | 改什么 | 落点 |
 |---|---|---|
 | 上下文只增不减 | 启用工具结果裁剪（旧结果只留头尾） | `cordis.patch.yml` → `tool-result-pruner` |
-| 工具结果未落盘 | spill 阈值 12500 → 3000 | `cordis.patch.yml` → `spill-policy.maxInlineTokens` |
+| 工具结果未落盘 | spill 阈值 12500 → 3000（**对 `read` 无效**） | `cordis.patch.yml` → `spill-policy.maxInlineTokens` |
 | 一次性读太多 | 先 glob/grep 定位、超 300 行分段读 | 项目 `AGENTS.md` |
 | 整步空跑 | 写入环境事实（真实 cwd + package.json 里的命令） | 项目 `AGENTS.md` |
 
@@ -92,6 +179,7 @@ http://127.0.0.1:<dsh端口>/dsh-cost-audit/
 - 写前备份 `<文件>.bak-<时间戳>`；按钮变成「已应用 · 撤销」后可一键还原
 - 幂等：重复点不会重复写
 - 配置类改动**重启 DSH 后生效**；`AGENTS.md` 下一次任务就生效
+- 整改接口要求 `x-dsh-audit: 1` 自定义头（跨站带不上，会先触发 preflight），失败即 403
 
 命令行等价操作：
 
@@ -100,15 +188,6 @@ node scripts/apply-fix.mjs --list
 node scripts/apply-fix.mjs --id=spill --dry-run
 node scripts/apply-fix.mjs --id=spill
 node scripts/apply-fix.mjs --id=spill --revert
-```
-
-
-**升级后旧报告不显示？** 0.7.0 之前只写 `.txt`，Web UI 读 `.json`。跑一次回填即可
-（用同一份会话日志重算，不伪造数字）：
-
-```bash
-node scripts/backfill-summaries.mjs --dry-run   # 先看会写哪些
-node scripts/backfill-summaries.mjs
 ```
 
 ### 报告长什么样
@@ -127,6 +206,9 @@ node scripts/backfill-summaries.mjs
    …
    → 做什么：先定位再读取：用 glob/grep 拿到结构后只读相关片段
 
+══ 没说的部分（弃权 / 已通过）══════════════════
+· [spill] 弃权 — 工具结果占体量 5.9%，但没有任何单条结果同时满足「≥2000 token」且「滞留 ≥2 步」。
+
 ══ 逐步账单（实测）══════════════════════════════
   步   体量    新输入   命中率   输出   工具  失败
   S1    16,257  16,257     0.0%    190     3     0
@@ -136,14 +218,14 @@ node scripts/backfill-summaries.mjs
 baseline.kind = estimated · logRevision 23 · 表面节点 4
 表面定价累计 2,512 token（surfaceTokens 2,512，请求压力 10,729）
    1,986     8   系统提示
-     392    11   用户消息
 ```
 
 ---
 
 ## 配置
 
-写在 profile 的 `cordis.patch.yml` 里（`--dump-config` 可验证是否生效）：
+写在 profile 的 `cordis.patch.yml` 里。profile 目录是 `$DSH_HOME/profiles/<profile>`，
+默认 `$DSH_HOME` 在 Windows 是 `%USERPROFILE%\.dsh`：
 
 ```yaml
 - id: dsh-cost-audit
@@ -152,15 +234,17 @@ baseline.kind = estimated · logRevision 23 · 表面节点 4
     maxReports: 100
 ```
 
+改完可以用 `dsh --profile web --dump-config` 确认真的进了组装树。
+
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 关掉后插件仍加载，但不产生任何副作用 |
 | `autoReport` | `true` | 每次 `session/flush` 自动写报告 |
-| `minIntervalMs` | `3000` | 同一会话两次审计的最小间隔，防高频 flush 反复重算 |
-| `outDir` | `$DSH_HOME/dsh-audit` | 输出目录 |
+| `minIntervalMs` | `3000` | 同一会话两次审计的最小间隔（毫秒），防高频 flush 反复重算；按会话计，不互相吞 |
+| `outDir` | `$DSH_HOME/dsh-audit` | 输出目录（代码默认值 `null` 表示按此推导） |
 | `maxReports` | `200` | 保留策略：最多保留多少份 `report-*.txt` |
 | `maxAgeDays` | `7` | 保留策略：早于这么多天的报告会被清理 |
-| `maxErrorLogBytes` | `262144` | `errors.log` 轮转阈值，超出改名为 `.1` |
+| `maxErrorLogBytes` | `262144`（256 KiB） | `errors.log` 轮转阈值，超出改名为 `.1` |
 | `debugShape` | `false` | 把 `readSession` 快照结构 dump 到 `debug-snapshot.json`（**见隐私说明**） |
 | `debugTriggers` | `false` | 每次触发在 `errors.log` 记一行，用于排查"为什么没出报告" |
 | `ui` | `true` | 是否提供 Web 报告页与右下角入口按钮（`/dsh-cost-audit/`） |
@@ -218,6 +302,22 @@ baseline.kind = estimated · logRevision 23 · 表面节点 4
 曾经还挂过 `agent/turn-stopping`，但它的首参是 `{ agent, turn, signal }` 而非 Session，
 那条路径**从未触发过审计**（0.7.0 已删除）。这也是为什么本插件用
 `session/flush` 而不是"turn 结束时更完整"的直觉写法。
+
+---
+
+## 已知限制
+
+- **`read` 被 `spill-policy` 写死豁免**：源码里 `if (exec.name === 'read') return decision`，
+  read 的结果永远不会落盘，调 `maxInlineTokens` 对它零收益。插件只对非 read 工具开 spill 处方，
+  read 的大结果改开「先定位、分段读」处方
+- `measure().totalTokens` 不是账单（见「口径」）
+- compaction 剪掉的节点仍计入 carry（长会话滞留成本偏高）
+- 插件级 schema 归因未实现（`ctx.tools.register()` 不暴露工具注册者）
+- token 估算在中文场景高估约 10–20%
+- 每次 flush 全量重算 `readSession` + analyze（同步 CPU）；当前量级可接受，增量解析尚未接入
+- 没有 `export const Config`，因此没有 Web 设置面板，配置只能写 `cordis.patch.yml`
+
+完整边界与设计取舍见仓库根 `README.md` 的「已知限制」一节。
 
 ---
 

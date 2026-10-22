@@ -7,6 +7,60 @@
 
 ---
 
+## [1.0.0] - 2026-10-22
+
+**第一个"装得上、用得上"的公开版本。** 0.11.0 之前的成果都在本机验证，
+但 `npm pack` 出来的 tarball 装到别人机器上会缺东西：离线 CLI 在包外、
+`files` 白名单只覆盖了插件运行期代码。1.0.0 把发布面补齐，并修掉两条
+只有"装到真实 profile 并热重载"才会暴露的运行时问题。
+
+### 新增
+
+- **离线 CLI 随 npm 包发布**：插件包新增 `bin: { "dsh-audit": "bin/dsh-audit.mjs" }`，
+  `files` 增加 `bin`。安装后可直接 `dsh-audit <会话目录>`，
+  免安装可用 `npx --yes --package=dsh-audit-plugin dsh-audit <会话目录>`（`--json` 同仓库版）
+  - 包内 CLI 由 `scripts/sync-core.mjs` 从仓库根 `bin/dsh-audit.mjs` 派生，
+    唯一差异是 `../src/lib/` → `../lib/core/` 的 import 路径，防止两份 CLI 漂移
+  - CLI 补齐 `--help` / `-h`、`--version` / `-V`、`--tool-limit N` 空格写法；
+    未知选项不再静默忽略，以 2 退出并提示用 `--help`
+- `packages/dsh-audit-plugin/README.en.md`：英文安装/使用说明，随包发布（根 `README.en.md` 只留仓库）
+- 根 `RELEASE.md`：发布前检查单、`npm pack → npm publish → tag` 步骤、回滚策略
+- `docs/release/2026-10-22-v1.0.0.md`：面向用户的 0.6 → 1.0 演进与升级说明
+- `test/cli-pack.test.mjs`（6 条）：files 白名单是否覆盖入口可达模块、包内 CLI 与根真源
+  是否一致、包内 CLI 能否真的跑、发布门控字段、是否夹带开发期文件、prepack 断言是否可通过
+
+### 修复
+
+- **热重载后 `duplicate exact route` 报错**（`lib/index.js`）
+  - 根因：宿主 `webServer.register()` / `tapIndex()` 返回的是反注册函数，路由表挂在
+    **服务实例**上，不随插件的 cordis scope 自动清理。旧代码丢弃了返回值，也没有
+    `ctx.effect`，所以 dshmarket 热挂载先 dispose 旧 fiber、再次 apply 时 5 条路由全部撞 duplicate
+  - 现在保存 disposer、经 `ctx.effect` 注册反注册、apply 返回 `disposeUi`；
+    `wired` 幂等；处理"inject 回调晚于 dispose 到达"；`disposeUi` 可重复调用
+- 原子写失败时清理 `.tmp-<pid>` 临时文件，避免被 `listSummaries`/`prune` 误扫
+- 打磨：`engines.node` 在仓库根与插件包对齐为 `^22.19.0 || >=24`；CI 改为 22.19 / 24 矩阵，
+  补跑全部 7 个测试文件、派生文件一致性、tarball 必含 `bin/` 与 `README.en.md` 断言
+- npm 发布面：`bin` 写 `"bin/dsh-audit.mjs"`（**不带 `./` 前缀**）——`npm publish` 会把
+  `./` 前缀的 bin 判为无效并静默移除，而 `npm pack` / 本地安装都不报错；`verify-pack.mjs`
+  与 `test/cli-pack.test.mjs` 已加断言，`npm publish --dry-run` 复验无警告
+
+### 优化
+
+- 打包清单断言（`scripts/verify-pack.mjs`）扩展：CLI 派生一致性、包内相对 import 可解析、
+  无 `dependencies/peerDependencies`、`files` 白名单只允许发布内容、`author`/`description` 门控
+- 真实最大会话（1,206,913 B zstd / 854 帧 / 1,428 事件）实测：解码 36.9 ms、
+  analyze 8.1 ms、宿主内 analyze+prescribe+render 7.4 ms，全流程 74–124 ms —— 不需要优化
+
+测试 61 → **78**（1.0.0 新增 6 条打包结构测试 + 7 条路由生命周期回归测试 + 4 条 CLI 帮助/版本/参数测试）。
+
+### 升级注意
+
+- 从 0.11.x 升级后**重启一次 DSH**：旧版本没有路由反注册，正在运行的那一个 fiber
+  无法回溯清理，重启前 `errors.log` 可能还会出现一批 `duplicate route`。
+- 插件条目 id 未变（`dsh-cost-audit`），profile 无需手工改配置；`dsh plugin remove` 卸载即可。
+
+---
+
 ## [0.11.0] - 2026-10-22
 
 **修掉一条假处方。** 真机验证时发现：应用了 `maxInlineTokens: 3000` 之后，

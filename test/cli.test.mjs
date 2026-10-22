@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -105,4 +105,36 @@ test('空目录不崩：没有任何 session 目录时给出可读错误', () =>
     failed = true;
   }
   assert.ok(failed, '没有会话时应以非零码退出，而不是静默成功');
+});
+
+const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+
+test('--help：打印用法并以 0 退出（不需要目标路径）', () => {
+  const out = execFileSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' });
+  assert.match(out, /用法/);
+  assert.match(out, /--json/);
+  assert.match(out, /--tool-limit/);
+  assert.match(out, /退出码/);
+});
+
+test('--version：输出与 package.json 一致的 x.y.z', () => {
+  const out = execFileSync(process.execPath, [CLI, '--version'], { encoding: 'utf8' }).trim();
+  assert.match(out, /^\d+\.\d+\.\d+$/);
+  assert.equal(out, pkg.version);
+});
+
+test('--tool-limit 支持 `--tool-limit=N` 与 `--tool-limit N` 两种写法', () => {
+  const dir = makeSession();
+  const stripTime = (s) => s.replace(/^生成时间.*$/m, '');
+  const eq = stripTime(execFileSync(process.execPath, [CLI, dir, '--tool-limit=3'], { encoding: 'utf8' }));
+  const sp = stripTime(execFileSync(process.execPath, [CLI, dir, '--tool-limit', '3'], { encoding: 'utf8' }));
+  assert.equal(sp, eq, '两种写法应产生相同报告（时间戳除外）');
+  assert.ok(eq.length > 50);
+});
+
+test('未知选项以 2 退出，不静默忽略', () => {
+  assert.throws(
+    () => execFileSync(process.execPath, [CLI, '--nope'], { encoding: 'utf8', stdio: 'pipe' }),
+    (e) => e.status === 2,
+  );
 });

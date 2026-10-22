@@ -1,10 +1,18 @@
 {
   "name": "dsh-agent-observability",
-  "version": "0.11.0",
+  "version": "1.0.0",
   "description": "离线审计 + 宿主内插件：看清 DSH 会话的成本去向并给出可执行处方。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lun-CC/dsh-agent-observability.git"
+  },
+  "homepage": "https://github.com/Lun-CC/dsh-agent-observability#readme",
+  "bugs": {
+    "url": "https://github.com/Lun-CC/dsh-agent-observability/issues"
+  },
   "type": "module",
   "bin": {
-    "dsh-audit": "./bin/dsh-audit.mjs"
+    "dsh-audit": "bin/dsh-audit.mjs"
   },
   "workspaces": [
     "packages/dsh-audit-plugin",
@@ -12,15 +20,16 @@
   ],
   "scripts": {
     "audit": "node bin/dsh-audit.mjs",
-    "test": "node --test test/metrics.test.mjs && node --test test/plugin.test.mjs && node --test test/plugin-audit.test.mjs && node --test test/plugin-ui.test.mjs && node --test test/fixes.test.mjs && node --test test/cli.test.mjs",
+    "test": "node --test test/metrics.test.mjs && node --test test/plugin.test.mjs && node --test test/plugin-audit.test.mjs && node --test test/plugin-ui.test.mjs && node --test test/fixes.test.mjs && node --test test/cli.test.mjs && node --test test/cli-pack.test.mjs",
     "sync:core": "node scripts/sync-core.mjs",
     "icon": "node scripts/make-icon.mjs",
     "verify:pack": "node scripts/verify-pack.mjs",
     "fix": "node scripts/apply-fix.mjs"
   },
   "engines": {
-    "node": ">=22.15"
+    "node": "^22.19.0 || >=24"
   },
+  "author": "lun",
   "license": "MIT",
   "private": true
 }
